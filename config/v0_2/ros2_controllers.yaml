@@ -1,0 +1,40 @@
+controller_manager:
+  ros__parameters:
+    update_rate: 100
+
+    joint_state_broadcaster:
+      type: joint_state_broadcaster/JointStateBroadcaster
+
+    base_controller:
+      type: hanmole_controllers/SwerveDriverController
+
+base_controller:
+  ros__parameters:
+    cmd_vel_topic: /cmd_vel
+    odom_topic: /odom
+    odom_frame_id: odom
+    base_frame_id: base_footprint
+    publish_rate: 50.0
+    enable_odom_tf: true
+
+    wheel_radius: 0.07
+    wheel_base: 0.488
+    track_width: 0.3727
+    max_wheel_velocity: 8.0
+    max_steer_velocity: 2.0
+    steer_angle_tolerance: 0.02
+    command_timeout: 0.5
+
+    steer_joints:
+      - joint_steer_front_left
+      - joint_steer_front_right
+      - joint_steer_rear_left
+      - joint_steer_rear_right
+    wheel_joints:
+      - joint_wheel_front_left
+      - joint_wheel_front_right
+      - joint_wheel_rear_left
+      - joint_wheel_rear_right
+
+    pose_covariance_diagonal: [0.02, 0.02, 0.0, 0.0, 0.0, 0.05]
+    twist_covariance_diagonal: [0.02, 0.02, 0.0, 0.0, 0.0, 0.05]
