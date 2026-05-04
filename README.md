@@ -7,9 +7,11 @@
 - 局部控制
 - 导航可视化
 
+`launch/bringup.launch.py` 是本包唯一对外文档化的导航聚合入口。它负责持有导航参数真值、地图路径接口和底盘导航适配开关；`nav_bringup.launch.py` 仅作为包内实现细节保留。
+
 ## 定位
 
-本包是 **Nav2 资产与适配包**，不是第二层系统级 bringup。
+本包是 **Nav2 资产与适配包**，同时拥有自己的公共 bringup 入口，不再依赖系统层直接拼装本包私有 launch 细节。
 
 它应当持有：
 
@@ -20,8 +22,6 @@
 - RViz 配置
 - 与底盘版本相关的少量导航适配节点
 - 导航入口 launch
-
-系统级启动统一由 `hanmole_bringup` 负责，`hanmole_bringup` 应直接 include 官方 Nav2 bringup，并装载本包中的参数与资源。
 
 ## 当前机器人版本支持
 
@@ -53,7 +53,7 @@ Nav2 -> /cmd_vel -> hanmole_navigation adapter -> /base_controller/reference
 
 职责分工如下：
 
-- `hanmole_bringup`：系统级 launch orchestration
+- `hanmole_bringup`：系统级场景装配，只 include 本包 `launch/bringup.launch.py`
 - `hanmole_navigation`：Nav2 参数、地图、行为树、可视化、导航适配
 - `hanmole_slam`：建图与地图保存
 - `hanmole_multi_robot`：多机器人协同
@@ -70,3 +70,48 @@ Nav2 -> /cmd_vel -> hanmole_navigation adapter -> /base_controller/reference
 - `v0_1` 的 `/cmd_vel` 适配节点
 
 当前 `v0_1 / v0_2` 的 Nav2 参数与 `v0_1` 的 `/cmd_vel` 适配已经迁入本包。导航主线应只保留 `hanmole_navigation`，不再保留第二层 Nav2 包装。
+
+## Public Bringup 参数真值
+
+以下参数由 `launch/bringup.launch.py` 对外拥有：
+
+| 参数 | 默认值 | 说明 |
+|---|---:|---|
+| `robot_version` | `v0_2` | 机器人版本，如 `v0_1`、`v0_2` |
+| `use_sim_time` | `false` | 是否使用仿真时间 |
+| `nav_mode` | `localization` | 仅支持 `off` 或 `localization` |
+| `map_yaml_file` | `""` | `localization` 模式下的静态地图 yaml |
+| `nav_params_file` | `""` | Nav2 参数覆盖文件；为空时使用包内默认参数 |
+| `base_controller_name` | `base_controller` | 底盘控制器名称 |
+| `use_cmd_vel_adapter` | `true` | 是否启用 `v0_1` 的 `/cmd_vel` 适配 |
+| `use_nav2` | `true` | 是否实际启动 Nav2 |
+
+## 运行
+
+构建并加载环境：
+
+```bash
+colcon build --packages-select hanmole_navigation
+source install/setup.bash
+```
+
+直接启动公共导航入口：
+
+```bash
+ros2 launch hanmole_navigation bringup.launch.py \
+  robot_version:=v0_2 \
+  nav_mode:=localization \
+  map_yaml_file:=/abs/path/to/map.yaml
+```
+
+如果只想验证参数拼装而暂时不真正启动 Nav2：
+
+```bash
+ros2 launch hanmole_navigation bringup.launch.py \
+  robot_version:=v0_1 \
+  nav_mode:=localization \
+  map_yaml_file:=/abs/path/to/map.yaml \
+  use_nav2:=false
+```
+
+`nav_mode:=off` 时，本包公共入口不会启动任何导航节点，便于系统层统一保留参数面而关闭导航。
