@@ -42,8 +42,14 @@ def _launch_setup(context, *args, **kwargs):
         pkg_share, 'config', robot_version, 'ros2_controllers.yaml')
     default_nav2_params = os.path.join(
         pkg_share, 'config', robot_version, 'nav2_params.yaml')
+    default_ekf_params = os.path.join(
+        pkg_share, 'config', robot_version, 'ekf.yaml')
+
     nav2_params = (
         LaunchConfiguration('params_file').perform(context) or default_nav2_params)
+    ekf_params = (
+        LaunchConfiguration('state_estimator_params_file').perform(context) or default_ekf_params)
+    
     base_controller_name = LaunchConfiguration(
         'base_controller_name').perform(context)
     controller_manager_name = LaunchConfiguration(
@@ -80,6 +86,19 @@ def _launch_setup(context, *args, **kwargs):
                 ],
             ),
         ])
+
+    if _as_bool(LaunchConfiguration('use_state_estimator').perform(context)):
+        actions.append(
+            IncludeLaunchDescription(
+                PythonLaunchDescriptionSource(
+                    os.path.join(pkg_share, 'launch', 'ekf.launch.py')),
+                launch_arguments={
+                    'robot_version': robot_version,
+                    'params_file': ekf_params,
+                    'use_sim_time': LaunchConfiguration('use_sim_time'),
+                }.items(),
+            )
+        )
 
     if robot_version == 'v0_1' and _as_bool(
         LaunchConfiguration('use_cmd_vel_adapter').perform(context)
@@ -187,5 +206,17 @@ def generate_launch_description():
         DeclareLaunchArgument('map', default_value=''),
         DeclareLaunchArgument('use_sim_time', default_value='false'),
         DeclareLaunchArgument('autostart', default_value='true'),
+
+        DeclareLaunchArgument(
+            'use_state_estimator',
+            default_value='true',
+            description='Start robot_localization EKF',
+        ),
+        DeclareLaunchArgument(
+            'state_estimator_params_file',
+            default_value='',
+            description='Optional EKF params file override',
+        ),
+        
         OpaqueFunction(function=_launch_setup),
     ])
