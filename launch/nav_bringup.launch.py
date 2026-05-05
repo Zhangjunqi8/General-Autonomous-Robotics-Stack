@@ -34,6 +34,10 @@ def _launch_setup(context, *args, **kwargs):
     robot_version = LaunchConfiguration('robot_version').perform(context)
     if robot_version not in ('v0_1', 'v0_2'):
         raise RuntimeError('robot_version must be one of: v0_1, v0_2')
+    if _as_bool(LaunchConfiguration('use_nav2').perform(context)):
+        map_yaml = LaunchConfiguration('map').perform(context)
+        if not map_yaml:
+            raise RuntimeError('localization requires a non-empty map yaml file')
 
     pkg_share = get_package_share_directory('hanmole_navigation')
     nav2_share = get_package_share_directory('nav2_bringup')
@@ -49,7 +53,7 @@ def _launch_setup(context, *args, **kwargs):
         LaunchConfiguration('params_file').perform(context) or default_nav2_params)
     ekf_params = (
         LaunchConfiguration('state_estimator_params_file').perform(context) or default_ekf_params)
-    
+
     base_controller_name = LaunchConfiguration(
         'base_controller_name').perform(context)
     controller_manager_name = LaunchConfiguration(
@@ -94,6 +98,7 @@ def _launch_setup(context, *args, **kwargs):
                     os.path.join(pkg_share, 'launch', 'ekf.launch.py')),
                 launch_arguments={
                     'robot_version': robot_version,
+                    'base_controller_name': base_controller_name,
                     'params_file': ekf_params,
                     'use_sim_time': LaunchConfiguration('use_sim_time'),
                 }.items(),
@@ -103,7 +108,7 @@ def _launch_setup(context, *args, **kwargs):
     if robot_version == 'v0_1' and _as_bool(
         LaunchConfiguration('use_cmd_vel_adapter').perform(context)
     ):
-        actions.extend([
+        actions.append(
             Node(
                 package='hanmole_navigation',
                 executable='cmd_vel_to_twist_stamped',
@@ -114,28 +119,32 @@ def _launch_setup(context, *args, **kwargs):
                     'output_topic': f'/{base_controller_name}/reference',
                     'frame_id': 'base_footprint',
                 }],
-            ),
-            Node(
-                package='topic_tools',
-                executable='relay',
-                name='relay_mecanum_odom',
-                output='screen',
-                parameters=[{
-                    'input_topic': f'/{base_controller_name}/odometry',
-                    'output_topic': '/odom',
-                }],
-            ),
-            Node(
-                package='topic_tools',
-                executable='relay',
-                name='relay_mecanum_tf',
-                output='screen',
-                parameters=[{
-                    'input_topic': f'/{base_controller_name}/tf_odometry',
-                    'output_topic': '/tf',
-                }],
-            ),
-        ])
+            )
+        )
+
+        if not _as_bool(LaunchConfiguration('use_state_estimator').perform(context)):
+            actions.extend([
+                Node(
+                    package='topic_tools',
+                    executable='relay',
+                    name='relay_mecanum_odom',
+                    output='screen',
+                    parameters=[{
+                        'input_topic': f'/{base_controller_name}/odometry',
+                        'output_topic': '/odom',
+                    }],
+                ),
+                Node(
+                    package='topic_tools',
+                    executable='relay',
+                    name='relay_mecanum_tf',
+                    output='screen',
+                    parameters=[{
+                        'input_topic': f'/{base_controller_name}/tf_odometry',
+                        'output_topic': '/tf',
+                    }],
+                ),
+            ])
 
     if _as_bool(LaunchConfiguration('use_nav2').perform(context)):
         actions.append(
@@ -217,6 +226,6 @@ def generate_launch_description():
             default_value='',
             description='Optional EKF params file override',
         ),
-        
+
         OpaqueFunction(function=_launch_setup),
     ])
