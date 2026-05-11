@@ -19,7 +19,6 @@ def generate_launch_description():
         DeclareLaunchArgument('map_yaml_file', default_value=''),
         DeclareLaunchArgument('nav_params_file', default_value=''),
         DeclareLaunchArgument('base_controller_name', default_value='base_controller'),
-        DeclareLaunchArgument('use_cmd_vel_adapter', default_value='true'),
         DeclareLaunchArgument('use_nav2', default_value='true'),
     ]
 
@@ -40,7 +39,6 @@ def generate_launch_description():
             'params_file': LaunchConfiguration('nav_params_file'),
             'base_controller_name': LaunchConfiguration('base_controller_name'),
             'use_controller_spawners': 'false',
-            'use_cmd_vel_adapter': LaunchConfiguration('use_cmd_vel_adapter'),
             'use_sim_time': LaunchConfiguration('use_sim_time'),
             'use_nav2': LaunchConfiguration('use_nav2'),
         }.items(),

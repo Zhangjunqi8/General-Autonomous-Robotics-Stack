@@ -105,46 +105,31 @@ def _launch_setup(context, *args, **kwargs):
             )
         )
 
-    if robot_version == 'v0_1' and _as_bool(
-        LaunchConfiguration('use_cmd_vel_adapter').perform(context)
+    if robot_version == 'v0_1' and not _as_bool(
+        LaunchConfiguration('use_state_estimator').perform(context)
     ):
-        actions.append(
+        actions.extend([
             Node(
-                package='hanmole_navigation',
-                executable='cmd_vel_to_twist_stamped',
-                name='cmd_vel_to_mecanum_reference',
+                package='topic_tools',
+                executable='relay',
+                name='relay_mecanum_odom',
                 output='screen',
                 parameters=[{
-                    'input_topic': '/cmd_vel',
-                    'output_topic': f'/{base_controller_name}/reference',
-                    'frame_id': 'base_footprint',
+                    'input_topic': f'/{base_controller_name}/odometry',
+                    'output_topic': '/odom',
                 }],
-            )
-        )
-
-        if not _as_bool(LaunchConfiguration('use_state_estimator').perform(context)):
-            actions.extend([
-                Node(
-                    package='topic_tools',
-                    executable='relay',
-                    name='relay_mecanum_odom',
-                    output='screen',
-                    parameters=[{
-                        'input_topic': f'/{base_controller_name}/odometry',
-                        'output_topic': '/odom',
-                    }],
-                ),
-                Node(
-                    package='topic_tools',
-                    executable='relay',
-                    name='relay_mecanum_tf',
-                    output='screen',
-                    parameters=[{
-                        'input_topic': f'/{base_controller_name}/tf_odometry',
-                        'output_topic': '/tf',
-                    }],
-                ),
-            ])
+            ),
+            Node(
+                package='topic_tools',
+                executable='relay',
+                name='relay_mecanum_tf',
+                output='screen',
+                parameters=[{
+                    'input_topic': f'/{base_controller_name}/tf_odometry',
+                    'output_topic': '/tf',
+                }],
+            ),
+        ])
 
     if _as_bool(LaunchConfiguration('use_nav2').perform(context)):
         actions.append(
@@ -195,13 +180,6 @@ def generate_launch_description():
             'use_controller_spawners',
             default_value='true',
             description='Spawn joint_state_broadcaster and base controller.',
-        ),
-        DeclareLaunchArgument(
-            'use_cmd_vel_adapter',
-            default_value='true',
-            description=(
-                'Convert v0_1 /cmd_vel Twist to mecanum TwistStamped reference.'
-            ),
         ),
         DeclareLaunchArgument(
             'use_nav2',

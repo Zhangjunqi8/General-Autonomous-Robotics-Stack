@@ -10,15 +10,6 @@ endif()
 
 find_package(ament_cmake REQUIRED)
 find_package(ament_cmake_pytest REQUIRED)
-find_package(geometry_msgs REQUIRED)
-find_package(rclcpp REQUIRED)
-
-add_executable(cmd_vel_to_twist_stamped src/cmd_vel_to_twist_stamped.cpp)
-ament_target_dependencies(cmd_vel_to_twist_stamped
-  geometry_msgs
-  rclcpp
-)
-
 set(navigation_share_dirs
   launch
   config
@@ -33,10 +24,6 @@ endif()
 install(
   DIRECTORY ${navigation_share_dirs}
   DESTINATION share/${PROJECT_NAME}
-)
-
-install(TARGETS cmd_vel_to_twist_stamped
-  DESTINATION lib/${PROJECT_NAME}
 )
 
 install(

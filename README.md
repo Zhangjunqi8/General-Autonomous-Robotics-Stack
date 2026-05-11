@@ -7,11 +7,11 @@
 - 局部控制
 - 导航可视化
 
-`launch/bringup.launch.py` 是本包唯一对外文档化的导航聚合入口。它负责持有导航参数真值、地图路径接口和底盘导航适配开关；`nav_bringup.launch.py` 仅作为包内实现细节保留。
+`launch/bringup.launch.py` 是本包唯一对外文档化的导航聚合入口。它负责持有导航参数真值、地图路径接口和 Nav2 场景装配；`nav_bringup.launch.py` 仅作为包内实现细节保留。
 
 ## 定位
 
-本包是 **Nav2 资产与适配包**，同时拥有自己的公共 bringup 入口，不再依赖系统层直接拼装本包私有 launch 细节。
+本包是 **Nav2 资产包**，同时拥有自己的公共 bringup 入口，不再依赖系统层直接拼装本包私有 launch 细节。
 
 它应当持有：
 
@@ -20,29 +20,30 @@
 
 - 行为树配置
 - RViz 配置
-- 与底盘版本相关的少量导航适配节点
 - 导航入口 launch
 
 ## 当前机器人版本支持
+
+### 公共 AGV 速度契约
+
+- 对外唯一公开速度命令 topic：`/cmd_vel`
+- 消息类型：`geometry_msgs/msg/TwistStamped`
+- `header.stamp` 由生产者提供，供底盘控制器按消息时间做超时判断
+- `header.frame_id` 仅允许 `""` 或 `base_footprint`
 
 ### `v0_1`
 
 - 底盘类型：麦克纳姆轮
 - 底盘控制器：社区 `mecanum_drive_controller/MecanumDriveController`
-- Jazzy 下需将 `/cmd_vel` 的 `geometry_msgs/msg/Twist` 适配为 `<controller>/reference` 的 `geometry_msgs/msg/TwistStamped`
-
-因此，`v0_1` 的导航最小链路为：
-
-```text
-Nav2 -> /cmd_vel -> hanmole_navigation adapter -> /base_controller/reference
-```
+- Jazzy 下控制器内部仍消费 `<controller>/reference` 的 `geometry_msgs/msg/TwistStamped`
+- `/cmd_vel -> <controller>/reference` 仅是 bringup / hardware 侧的私有实现细节，不属于导航包职责
 
 ### `v0_2`
 
 - 底盘类型：四转四驱
 - 底盘控制器：`hanmole_controllers/SwerveDriverController`
 
-`v0_2` 不需要复用麦克纳姆适配逻辑。
+`v0_2` 直接由 `hanmole_controllers/SwerveDriverController` 订阅 `TwistStamped /cmd_vel`。
 
 ## 与其他包的边界
 
@@ -54,10 +55,11 @@ Nav2 -> /cmd_vel -> hanmole_navigation adapter -> /base_controller/reference
 职责分工如下：
 
 - `hanmole_bringup`：系统级场景装配，只 include 本包 `launch/bringup.launch.py`
-- `hanmole_navigation`：Nav2 参数、地图、行为树、可视化、导航适配
+- `hanmole_navigation`：Nav2 参数、地图、行为树、可视化、导航场景装配
 - `hanmole_slam`：建图与地图保存
 - `hanmole_multi_robot`：多机器人协同
 - `hanmole_controllers`：底盘执行控制器
+- `hanmole_hardware` / `hanmole_bringup`：底盘控制器启动与 `v0_1` 私有兼容链路
 
 ## 迁移方向
 
@@ -67,9 +69,7 @@ Nav2 -> /cmd_vel -> hanmole_navigation adapter -> /base_controller/reference
 - 地图资产
 - 行为树 XML
 - RViz 配置
-- `v0_1` 的 `/cmd_vel` 适配节点
-
-当前 `v0_1 / v0_2` 的 Nav2 参数与 `v0_1` 的 `/cmd_vel` 适配已经迁入本包。导航主线应只保留 `hanmole_navigation`，不再保留第二层 Nav2 包装。
+当前 `v0_1 / v0_2` 的 Nav2 参数已经迁入本包。导航主线应只保留 `hanmole_navigation`，不再保留第二层 Nav2 包装。
 
 ## Public Bringup 参数真值
 
@@ -83,7 +83,6 @@ Nav2 -> /cmd_vel -> hanmole_navigation adapter -> /base_controller/reference
 | `map_yaml_file` | `""` | `localization` 模式下的静态地图 yaml |
 | `nav_params_file` | `""` | Nav2 参数覆盖文件；为空时使用包内默认参数 |
 | `base_controller_name` | `base_controller` | 底盘控制器名称 |
-| `use_cmd_vel_adapter` | `true` | 是否启用 `v0_1` 的 `/cmd_vel` 适配 |
 | `use_nav2` | `true` | 是否实际启动 Nav2 |
 
 ## 运行

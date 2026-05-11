@@ -3,14 +3,11 @@
 <package format="3">
   <name>hanmole_navigation</name>
   <version>0.1.0</version>
-  <description>瀚墨机器人导航包，基于 Nav2 提供定位、路径规划、局部控制、导航可视化与底盘导航适配资产</description>
+  <description>瀚墨机器人导航包，基于 Nav2 提供定位、路径规划、局部控制、导航可视化与导航场景资产</description>
   <maintainer email="chaochen497@gmail.com">hanmole</maintainer>
   <license>Apache-2.0</license>
 
   <buildtool_depend>ament_cmake</buildtool_depend>
-
-  <depend>geometry_msgs</depend>
-  <depend>rclcpp</depend>
 
   <exec_depend>ament_index_python</exec_depend>
   <exec_depend>launch</exec_depend>

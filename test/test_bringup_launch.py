@@ -51,7 +51,6 @@ def test_v0_1_state_estimator_path_does_not_relay_mecanum_tf():
         'base_controller_name': 'base_controller',
         'controller_manager_name': '/controller_manager_agv',
         'use_controller_spawners': 'false',
-        'use_cmd_vel_adapter': 'true',
         'use_nav2': 'false',
         'params_file': '',
         'slam': 'False',
@@ -74,7 +73,7 @@ def test_v0_1_state_estimator_path_does_not_relay_mecanum_tf():
     assert '/base_controller/tf_odometry' not in relay_parameter_text
 
 
-def test_v0_1_state_estimator_path_still_relays_cmd_vel_reference():
+def test_v0_1_state_estimator_path_does_not_launch_cmd_vel_adapter():
     module = _load_launch_module(
         'launch/nav_bringup.launch.py',
         'hanmole_navigation_nav_bringup_cmd_vel',
@@ -86,7 +85,6 @@ def test_v0_1_state_estimator_path_still_relays_cmd_vel_reference():
         'base_controller_name': 'base_controller',
         'controller_manager_name': '/controller_manager_agv',
         'use_controller_spawners': 'false',
-        'use_cmd_vel_adapter': 'true',
         'use_nav2': 'false',
         'params_file': '',
         'slam': 'False',
@@ -103,10 +101,10 @@ def test_v0_1_state_estimator_path_still_relays_cmd_vel_reference():
         if isinstance(action, Node)
         and _node_private_value(action, '_Node__package') == 'hanmole_navigation'
     ]
-    node_name_text = '\n'.join(
-        _node_private_value(action, '_Node__node_name') for action in adapter_nodes
+    executable_text = '\n'.join(
+        _node_private_value(action, '_Node__node_executable') for action in adapter_nodes
     )
-    assert 'cmd_vel_to_mecanum_reference' in node_name_text
+    assert 'cmd_vel_to_twist_stamped' not in executable_text
 
 
 def test_v0_1_localization_requires_non_empty_map_argument():
@@ -121,7 +119,6 @@ def test_v0_1_localization_requires_non_empty_map_argument():
         'base_controller_name': 'base_controller',
         'controller_manager_name': '/controller_manager_agv',
         'use_controller_spawners': 'false',
-        'use_cmd_vel_adapter': 'true',
         'use_nav2': 'true',
         'params_file': '',
         'slam': 'False',
@@ -150,3 +147,10 @@ def test_v0_1_public_bringup_forwards_localization_arguments():
     ]
 
     assert include_actions
+
+
+def test_public_bringup_no_longer_declares_cmd_vel_adapter_toggle():
+    bringup_path = Path(__file__).resolve().parents[1] / 'launch' / 'bringup.launch.py'
+    source = bringup_path.read_text(encoding='utf-8')
+
+    assert 'use_cmd_vel_adapter' not in source
