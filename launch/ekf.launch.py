@@ -26,9 +26,7 @@ def _launch_setup(context, *args, **kwargs):
     base_controller_name = LaunchConfiguration('base_controller_name').perform(context)
 
     resolved_params_file = params_file or str(_default_params_path(robot_version))
-    odom_input_topic = '/odom'
-    if robot_version == 'v0_1':
-        odom_input_topic = f'/{base_controller_name}/odometry'
+    odom_input_topic = '/wheel_odom'
 
     return [
         Node(

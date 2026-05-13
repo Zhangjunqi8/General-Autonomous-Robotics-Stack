@@ -34,16 +34,18 @@
 ### `v0_1`
 
 - 底盘类型：麦克纳姆轮
-- 底盘控制器：社区 `mecanum_drive_controller/MecanumDriveController`
-- Jazzy 下控制器内部仍消费 `<controller>/reference` 的 `geometry_msgs/msg/TwistStamped`
-- `/cmd_vel -> <controller>/reference` 仅是 bringup / hardware 侧的私有实现细节，不属于导航包职责
+- 底盘控制器：本地 `hanmole_controllers/MecanumDriveController`
+- 控制器直接订阅 `TwistStamped /cmd_vel`
+- 控制器只发布原始轮式里程计 `/wheel_odom`，不发布 `odom -> base_footprint` TF
+- `/imu/data` 由传感器层统一提供，`robot_localization` 融合 `/wheel_odom + /imu/data` 输出 `/odometry/filtered`
 
 ### `v0_2`
 
 - 底盘类型：四转四驱
 - 底盘控制器：`hanmole_controllers/SwerveDriverController`
-
-`v0_2` 直接由 `hanmole_controllers/SwerveDriverController` 订阅 `TwistStamped /cmd_vel`。
+- 直接订阅 `TwistStamped /cmd_vel`
+- 发布原始轮式里程计 `/wheel_odom`，不发布 `odom -> base_footprint` TF
+- `/imu/data` 由传感器层统一提供，`robot_localization` 融合 `/wheel_odom + /imu/data` 输出 `/odometry/filtered`
 
 ## 与其他包的边界
 
@@ -58,8 +60,9 @@
 - `hanmole_navigation`：Nav2 参数、地图、行为树、可视化、导航场景装配
 - `hanmole_slam`：建图与地图保存
 - `hanmole_multi_robot`：多机器人协同
-- `hanmole_controllers`：底盘执行控制器
-- `hanmole_hardware` / `hanmole_bringup`：底盘控制器启动与 `v0_1` 私有兼容链路
+- `hanmole_controllers`：底盘执行控制器，发布 `/wheel_odom`
+- `hanmole_hardware` / `hanmole_bringup`：底盘控制器启动与硬件装配
+- `robot_localization`：融合 `/wheel_odom + /imu/data`，输出 `/odometry/filtered` 和唯一的 `odom -> base_footprint` TF
 
 ## 迁移方向
 

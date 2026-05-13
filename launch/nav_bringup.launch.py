@@ -105,31 +105,6 @@ def _launch_setup(context, *args, **kwargs):
             )
         )
 
-    if robot_version == 'v0_1' and not _as_bool(
-        LaunchConfiguration('use_state_estimator').perform(context)
-    ):
-        actions.extend([
-            Node(
-                package='topic_tools',
-                executable='relay',
-                name='relay_mecanum_odom',
-                output='screen',
-                parameters=[{
-                    'input_topic': f'/{base_controller_name}/odometry',
-                    'output_topic': '/odom',
-                }],
-            ),
-            Node(
-                package='topic_tools',
-                executable='relay',
-                name='relay_mecanum_tf',
-                output='screen',
-                parameters=[{
-                    'input_topic': f'/{base_controller_name}/tf_odometry',
-                    'output_topic': '/tf',
-                }],
-            ),
-        ])
 
     if _as_bool(LaunchConfiguration('use_nav2').perform(context)):
         actions.append(
