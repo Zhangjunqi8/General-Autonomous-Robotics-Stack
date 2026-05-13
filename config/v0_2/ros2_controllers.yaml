@@ -24,6 +24,7 @@ base_controller:
     max_steer_velocity: 2.0
     steer_angle_tolerance: 0.02
     command_timeout: 0.5
+    steer_position_offsets: [0.0, 3.141592653589793, 0.0, 3.141592653589793]
 
     steer_joints:
       - joint_steer_front_left

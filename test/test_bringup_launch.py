@@ -26,6 +26,12 @@ def _node_parameters_text(node: Node) -> str:
     return str(_node_private_value(node, '_Node__parameters'))
 
 
+def _launch_argument_value(context: LaunchContext, value) -> str:
+    if isinstance(value, str):
+        return value
+    return perform_substitutions(context, list(value))
+
+
 def _expanded_node_parameter_map(node: Node, context: LaunchContext) -> dict[str, str]:
     parameters = _node_private_value(node, '_Node__parameters')
     expanded = {}
@@ -147,6 +153,42 @@ def test_v0_1_public_bringup_forwards_localization_arguments():
     ]
 
     assert include_actions
+
+
+def test_nav2_bringup_enables_velocity_smoother_and_collision_monitor():
+    module = _load_launch_module(
+        'launch/nav_bringup.launch.py',
+        'hanmole_navigation_nav_bringup_nav2_pipeline',
+    )
+
+    context = LaunchContext()
+    context.launch_configurations.update({
+        'robot_version': 'v0_2',
+        'base_controller_name': 'base_controller',
+        'controller_manager_name': '/controller_manager',
+        'use_controller_spawners': 'false',
+        'use_nav2': 'true',
+        'params_file': '',
+        'slam': 'False',
+        'map': '/tmp/mock_map.yaml',
+        'use_sim_time': 'false',
+        'autostart': 'true',
+        'use_state_estimator': 'true',
+        'state_estimator_params_file': '',
+    })
+
+    actions = module._launch_setup(context)
+    nav2_includes = [
+        action for action in actions
+        if isinstance(action, IncludeLaunchDescription)
+    ]
+
+    assert len(nav2_includes) == 2
+    nav2_bringup = nav2_includes[-1]
+    launch_arguments = dict(nav2_bringup.launch_arguments)
+
+    assert _launch_argument_value(context, launch_arguments['use_velocity_smoother']) == 'True'
+    assert _launch_argument_value(context, launch_arguments['use_collision_monitor']) == 'True'
 
 
 def test_public_bringup_no_longer_declares_cmd_vel_adapter_toggle():

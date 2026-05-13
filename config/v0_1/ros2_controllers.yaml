@@ -6,10 +6,11 @@ controller_manager:
       type: joint_state_broadcaster/JointStateBroadcaster
 
     base_controller:
-      type: mecanum_drive_controller/MecanumDriveController
+      type: hanmole_controllers/MecanumDriveController
 
 base_controller:
   ros__parameters:
+    cmd_vel_topic: /cmd_vel
     reference_timeout: 0.5
 
     front_left_wheel_command_joint_name: joint_wheel_front_left

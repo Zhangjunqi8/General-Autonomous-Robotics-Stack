@@ -41,6 +41,13 @@ def test_v0_2_nav2_profile_publishes_stamped_cmd_vel():
 
     controller_server = config['controller_server']['ros__parameters']
     velocity_smoother = config['velocity_smoother']['ros__parameters']
+    collision_monitor = config['collision_monitor']['ros__parameters']
 
     assert controller_server['enable_stamped_cmd_vel'] is True
     assert velocity_smoother['enable_stamped_cmd_vel'] is True
+    assert collision_monitor['enable_stamped_cmd_vel'] is True
+    assert controller_server['cmd_vel_out_topic'] == 'cmd_vel_nav'
+    assert velocity_smoother['cmd_vel_in_topic'] == 'cmd_vel_nav'
+    assert velocity_smoother['cmd_vel_out_topic'] == 'cmd_vel_smoothed'
+    assert collision_monitor['cmd_vel_in_topic'] == 'cmd_vel_smoothed'
+    assert collision_monitor['cmd_vel_out_topic'] == 'cmd_vel'

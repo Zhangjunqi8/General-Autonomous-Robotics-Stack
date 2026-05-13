@@ -142,10 +142,10 @@ def _launch_setup(context, *args, **kwargs):
                     'params_file': nav2_params,
                     'use_sim_time': LaunchConfiguration('use_sim_time'),
                     'autostart': LaunchConfiguration('autostart'),
-                    'use_collision_monitor': 'False',
+                    'use_collision_monitor': 'True',
                     'use_smoother': 'False',
                     'use_waypoint_follower': 'False',
-                    'use_velocity_smoother': 'False',
+                    'use_velocity_smoother': 'True',
                     'use_docking_server': 'False',
                 }.items(),
             )
