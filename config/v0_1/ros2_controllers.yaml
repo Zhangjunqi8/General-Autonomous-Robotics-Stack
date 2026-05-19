@@ -33,7 +33,7 @@ base_controller:
 
     base_frame_id: base_footprint
     odom_frame_id: odom
-    enable_odom_tf: true
+    enable_odom_tf: false
     tf_frame_prefix_enable: false
     pose_covariance_diagonal: [0.02, 0.02, 0.0, 0.0, 0.0, 0.05]
     twist_covariance_diagonal: [0.02, 0.02, 0.0, 0.0, 0.0, 0.05]

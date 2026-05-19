@@ -68,6 +68,11 @@ velocity_smoother:
     deadband_velocity: [0.0, 0.0, 0.0]
     velocity_timeout: 1.0
 
+behavior_server:
+  ros__parameters:
+    use_sim_time: False
+    enable_stamped_cmd_vel: true
+
 planner_server:
   ros__parameters:
     expected_planner_frequency: 10.0

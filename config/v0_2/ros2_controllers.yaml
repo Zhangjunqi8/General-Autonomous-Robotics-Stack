@@ -15,15 +15,21 @@ base_controller:
     odom_frame_id: odom
     base_frame_id: base_footprint
     publish_rate: 50.0
-    enable_odom_tf: true
+    enable_odom_tf: false
 
     wheel_radius: 0.07
     wheel_base: 0.488
     track_width: 0.3727
     max_wheel_velocity: 8.0
     max_steer_velocity: 2.0
-    steer_angle_tolerance: 0.02
+    steer_angle_tolerance: 0.05
+    steer_lower_limits: [-1.05, -1.05, -1.05, -1.05]
+    steer_upper_limits: [1.05, 1.05, 1.05, 1.05]
     command_timeout: 0.5
+    stop_command_epsilon: 0.02
+    odom_linear_deadband: 0.005
+    odom_angular_deadband: 0.005
+    park_on_stop_command: true
 
     steer_joints:
       - joint_steer_front_left
