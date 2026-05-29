@@ -20,6 +20,7 @@ def generate_launch_description():
         DeclareLaunchArgument('nav_params_file', default_value=''),
         DeclareLaunchArgument('base_controller_name', default_value='base_controller'),
         DeclareLaunchArgument('use_nav2', default_value='true'),
+        DeclareLaunchArgument('use_composition', default_value='False'),
     ]
 
     localization_mode = PythonExpression([
@@ -41,6 +42,7 @@ def generate_launch_description():
             'use_controller_spawners': 'false',
             'use_sim_time': LaunchConfiguration('use_sim_time'),
             'use_nav2': LaunchConfiguration('use_nav2'),
+            'use_composition': LaunchConfiguration('use_composition'),
         }.items(),
     )
 

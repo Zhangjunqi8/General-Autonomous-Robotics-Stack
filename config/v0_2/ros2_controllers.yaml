@@ -21,15 +21,27 @@ base_controller:
     wheel_base: 0.488
     track_width: 0.3727
     max_wheel_velocity: 8.0
-    max_steer_velocity: 2.0
-    steer_angle_tolerance: 0.05
-    steer_lower_limits: [-1.05, -1.05, -1.05, -1.05]
-    steer_upper_limits: [1.05, 1.05, 1.05, 1.05]
+    max_steer_velocity: 5.0
+    steer_angle_tolerance: 0.02
+    drive_alignment_deadzone: 0.12
+    spin_drive_alignment_deadzone: 0.20
+    # 当前主控制链实际以 hanmole_hardware/configs/v0_2/ros2_controllers.yaml 为准。
+    # 这里同步 v0_2 模型的左右非对称转向角域，并开启防缠线 steer 限位策略。
+    enable_steer_position_limits: true
+    # 该组限位按 controller / hardware 实际坐标系填写，已包含 steer_signs 的镜像。
+    steer_position_lower_limits: [-1.67, 0.0, 0.0, -1.67]
+    steer_position_upper_limits: [0.0, 1.67, 1.67, 0.0]
+    steer_soft_limit_margin: 0.12
+    enable_steer_flip: true
+    steer_flip_on_threshold: 2.10
+    steer_flip_off_threshold: 1.30
+    steer_flip_min_interval: 0.80
+    zero_wheel_velocity_when_steer_target_clamped: true
     command_timeout: 0.5
-    stop_command_epsilon: 0.02
+    stop_command_epsilon: 0.001
     odom_linear_deadband: 0.005
     odom_angular_deadband: 0.005
-    park_on_stop_command: true
+    park_on_stop_command: false
 
     steer_joints:
       - joint_steer_front_left
