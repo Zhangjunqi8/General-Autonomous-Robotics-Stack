@@ -24,6 +24,10 @@ def _as_bool(value: str) -> bool:
     return value.lower() in ('1', 'true', 'yes', 'on')
 
 
+def _launch_config_as_bool(context, name: str, default: str = 'false') -> bool:
+    return _as_bool(context.launch_configurations.get(name, default))
+
+
 def _default_robot_version() -> str:
     pkg_share = get_package_share_directory('hanmole_navigation')
     settings_path = os.path.join(pkg_share, 'config', 'settings.toml')
@@ -60,17 +64,24 @@ def _build_configured_nav2_params(
     namespace,
     use_namespace,
     autostart,
+    map_yaml='',
 ):
+    use_namespace_value = use_namespace
+    if isinstance(use_namespace, str):
+        use_namespace_value = use_namespace
     rewritten_source = ReplaceString(
         source_file=params_file,
         replacements={'<robot_namespace>': ('/', namespace)},
-        condition=IfCondition(use_namespace),
+        condition=IfCondition(use_namespace_value),
     )
+    param_rewrites = {'autostart': autostart}
+    if map_yaml:
+        param_rewrites['map_server.ros__parameters.yaml_filename'] = map_yaml
     return ParameterFile(
         RewrittenYaml(
             source_file=rewritten_source,
             root_key=namespace,
-            param_rewrites={'autostart': autostart},
+            param_rewrites=param_rewrites,
             convert_types=True,
         ),
         allow_substs=True,
@@ -84,20 +95,22 @@ def _create_navigation_node_actions(
     log_level,
 ):
     remappings = _navigation_remappings()
+    lifecycle_node_names = _navigation_lifecycle_nodes()
+    controller_action = Node(
+        package='nav2_controller',
+        executable='controller_server',
+        output='screen',
+        respawn=use_respawn,
+        respawn_delay=2.0,
+        parameters=[configured_params],
+        arguments=['--ros-args', '--log-level', log_level],
+        remappings=remappings + [('cmd_vel', 'cmd_vel_nav')],
+    )
     return GroupAction(
         condition=UnlessCondition(LaunchConfiguration('use_composition')),
         actions=[
             SetParameter('use_sim_time', use_sim_time),
-            Node(
-                package='nav2_controller',
-                executable='controller_server',
-                output='screen',
-                respawn=use_respawn,
-                respawn_delay=2.0,
-                parameters=[configured_params],
-                arguments=['--ros-args', '--log-level', log_level],
-                remappings=remappings + [('cmd_vel', 'cmd_vel_nav')],
-            ),
+            controller_action,
             Node(
                 package='nav2_smoother',
                 executable='smoother_server',
@@ -183,7 +196,7 @@ def _create_navigation_node_actions(
                 arguments=['--ros-args', '--log-level', log_level],
                 parameters=[
                     {'autostart': LaunchConfiguration('autostart')},
-                    {'node_names': _navigation_lifecycle_nodes()},
+                    {'node_names': lifecycle_node_names},
                 ],
             ),
         ],
@@ -195,85 +208,89 @@ def _create_navigation_composable_actions(
     namespace,
     container_name,
     use_sim_time,
+    log_level,
 ):
     remappings = _navigation_remappings()
+    composable_nodes = [
+        ComposableNode(
+            package='nav2_controller',
+            plugin='nav2_controller::ControllerServer',
+            name='controller_server',
+            parameters=[configured_params],
+            remappings=remappings + [('cmd_vel', 'cmd_vel_nav')],
+        ),
+        ComposableNode(
+            package='nav2_smoother',
+            plugin='nav2_smoother::SmootherServer',
+            name='smoother_server',
+            parameters=[configured_params],
+            remappings=remappings,
+        ),
+        ComposableNode(
+            package='nav2_planner',
+            plugin='nav2_planner::PlannerServer',
+            name='planner_server',
+            parameters=[configured_params],
+            remappings=remappings,
+        ),
+        ComposableNode(
+            package='nav2_behaviors',
+            plugin='behavior_server::BehaviorServer',
+            name='behavior_server',
+            parameters=[configured_params],
+            remappings=remappings + [('cmd_vel', 'cmd_vel_nav')],
+        ),
+        ComposableNode(
+            package='nav2_bt_navigator',
+            plugin='nav2_bt_navigator::BtNavigator',
+            name='bt_navigator',
+            parameters=[configured_params],
+            remappings=remappings,
+        ),
+        ComposableNode(
+            package='nav2_waypoint_follower',
+            plugin='nav2_waypoint_follower::WaypointFollower',
+            name='waypoint_follower',
+            parameters=[configured_params],
+            remappings=remappings,
+        ),
+        ComposableNode(
+            package='nav2_velocity_smoother',
+            plugin='nav2_velocity_smoother::VelocitySmoother',
+            name='velocity_smoother',
+            parameters=[configured_params],
+            remappings=remappings + [('cmd_vel', 'cmd_vel_nav')],
+        ),
+        ComposableNode(
+            package='nav2_collision_monitor',
+            plugin='nav2_collision_monitor::CollisionMonitor',
+            name='collision_monitor',
+            parameters=[configured_params],
+            remappings=remappings,
+        ),
+        ComposableNode(
+            package='nav2_lifecycle_manager',
+            plugin='nav2_lifecycle_manager::LifecycleManager',
+            name='lifecycle_manager_navigation',
+            parameters=[
+                {
+                    'autostart': LaunchConfiguration('autostart'),
+                    'node_names': _navigation_lifecycle_nodes(),
+                }
+            ],
+        ),
+    ]
+
+    actions = [
+        SetParameter('use_sim_time', use_sim_time),
+        LoadComposableNodes(
+            target_container=(namespace, '/', container_name),
+            composable_node_descriptions=composable_nodes,
+        ),
+    ]
     return GroupAction(
         condition=IfCondition(LaunchConfiguration('use_composition')),
-        actions=[
-            SetParameter('use_sim_time', use_sim_time),
-            LoadComposableNodes(
-                target_container=(namespace, '/', container_name),
-                composable_node_descriptions=[
-                    ComposableNode(
-                        package='nav2_controller',
-                        plugin='nav2_controller::ControllerServer',
-                        name='controller_server',
-                        parameters=[configured_params],
-                        remappings=remappings + [('cmd_vel', 'cmd_vel_nav')],
-                    ),
-                    ComposableNode(
-                        package='nav2_smoother',
-                        plugin='nav2_smoother::SmootherServer',
-                        name='smoother_server',
-                        parameters=[configured_params],
-                        remappings=remappings,
-                    ),
-                    ComposableNode(
-                        package='nav2_planner',
-                        plugin='nav2_planner::PlannerServer',
-                        name='planner_server',
-                        parameters=[configured_params],
-                        remappings=remappings,
-                    ),
-                    ComposableNode(
-                        package='nav2_behaviors',
-                        plugin='behavior_server::BehaviorServer',
-                        name='behavior_server',
-                        parameters=[configured_params],
-                        remappings=remappings + [('cmd_vel', 'cmd_vel_nav')],
-                    ),
-                    ComposableNode(
-                        package='nav2_bt_navigator',
-                        plugin='nav2_bt_navigator::BtNavigator',
-                        name='bt_navigator',
-                        parameters=[configured_params],
-                        remappings=remappings,
-                    ),
-                    ComposableNode(
-                        package='nav2_waypoint_follower',
-                        plugin='nav2_waypoint_follower::WaypointFollower',
-                        name='waypoint_follower',
-                        parameters=[configured_params],
-                        remappings=remappings,
-                    ),
-                    ComposableNode(
-                        package='nav2_velocity_smoother',
-                        plugin='nav2_velocity_smoother::VelocitySmoother',
-                        name='velocity_smoother',
-                        parameters=[configured_params],
-                        remappings=remappings + [('cmd_vel', 'cmd_vel_nav')],
-                    ),
-                    ComposableNode(
-                        package='nav2_collision_monitor',
-                        plugin='nav2_collision_monitor::CollisionMonitor',
-                        name='collision_monitor',
-                        parameters=[configured_params],
-                        remappings=remappings,
-                    ),
-                    ComposableNode(
-                        package='nav2_lifecycle_manager',
-                        plugin='nav2_lifecycle_manager::LifecycleManager',
-                        name='lifecycle_manager_navigation',
-                        parameters=[
-                            {
-                                'autostart': LaunchConfiguration('autostart'),
-                                'node_names': _navigation_lifecycle_nodes(),
-                            }
-                        ],
-                    ),
-                ],
-            ),
-        ],
+        actions=actions,
     )
 
 
@@ -303,12 +320,22 @@ def _launch_setup(context, *args, **kwargs):
 
     namespace = LaunchConfiguration('namespace')
     use_namespace = LaunchConfiguration('use_namespace')
+    namespace_value = context.launch_configurations.get('namespace', '')
+    use_namespace_value = context.launch_configurations.get('use_namespace', 'False')
     use_sim_time = LaunchConfiguration('use_sim_time')
     autostart = LaunchConfiguration('autostart')
     use_composition = LaunchConfiguration('use_composition')
     use_respawn = LaunchConfiguration('use_respawn')
     log_level = LaunchConfiguration('log_level')
     container_name = LaunchConfiguration('container_name')
+    use_sim_time_value = use_sim_time.perform(context)
+    autostart_value = autostart.perform(context)
+    use_composition_value = context.launch_configurations.get(
+        'use_composition', 'True')
+    use_respawn_value = context.launch_configurations.get(
+        'use_respawn', 'False')
+    container_name_value = context.launch_configurations.get(
+        'container_name', 'nav2_container')
     base_controller_name = LaunchConfiguration(
         'base_controller_name').perform(context)
     controller_manager_name = LaunchConfiguration(
@@ -363,10 +390,12 @@ def _launch_setup(context, *args, **kwargs):
     if _as_bool(LaunchConfiguration('use_nav2').perform(context)):
         configured_params = _build_configured_nav2_params(
             nav2_params,
-            namespace,
-            use_namespace,
+            namespace_value,
+            use_namespace_value,
             autostart,
+            map_yaml,
         )
+        configured_params_path = str(configured_params.evaluate(context))
         nav2_launch_dir = os.path.join(nav2_share, 'launch')
         actions.extend([
             SetEnvironmentVariable('RCUTILS_LOGGING_BUFFERED_STREAM', '1'),
@@ -390,10 +419,10 @@ def _launch_setup(context, *args, **kwargs):
                         condition=IfCondition(LaunchConfiguration('slam')),
                         launch_arguments={
                             'namespace': namespace,
-                            'use_sim_time': use_sim_time,
-                            'autostart': autostart,
-                            'use_respawn': use_respawn,
-                            'params_file': nav2_params,
+                            'use_sim_time': use_sim_time_value,
+                            'autostart': autostart_value,
+                            'use_respawn': use_respawn_value,
+                            'params_file': configured_params_path,
                         }.items(),
                     ),
                     IncludeLaunchDescription(
@@ -403,13 +432,13 @@ def _launch_setup(context, *args, **kwargs):
                         condition=UnlessCondition(LaunchConfiguration('slam')),
                         launch_arguments={
                             'namespace': namespace,
-                            'map': LaunchConfiguration('map'),
-                            'use_sim_time': use_sim_time,
-                            'autostart': autostart,
-                            'params_file': nav2_params,
-                            'use_composition': use_composition,
-                            'use_respawn': use_respawn,
-                            'container_name': container_name,
+                            'map': map_yaml,
+                            'use_sim_time': use_sim_time_value,
+                            'autostart': autostart_value,
+                            'params_file': configured_params_path,
+                            'use_composition': use_composition_value,
+                            'use_respawn': use_respawn_value,
+                            'container_name': container_name_value,
                         }.items(),
                     ),
                     _create_navigation_node_actions(
@@ -423,6 +452,7 @@ def _launch_setup(context, *args, **kwargs):
                         namespace,
                         container_name,
                         use_sim_time,
+                        log_level,
                     ),
                 ]
             ),
