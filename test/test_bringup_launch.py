@@ -57,10 +57,9 @@ def test_v0_1_state_estimator_path_does_not_relay_mecanum_tf():
         'base_controller_name': 'base_controller',
         'controller_manager_name': '/controller_manager_agv',
         'use_controller_spawners': 'false',
-        'use_nav2': 'false',
         'params_file': '',
         'slam': 'False',
-        'map': '',
+        'map': '/tmp/mock_map.yaml',
         'use_sim_time': 'false',
         'autostart': 'true',
         'use_state_estimator': 'true',
@@ -91,10 +90,9 @@ def test_v0_1_state_estimator_path_does_not_launch_cmd_vel_adapter():
         'base_controller_name': 'base_controller',
         'controller_manager_name': '/controller_manager_agv',
         'use_controller_spawners': 'false',
-        'use_nav2': 'false',
         'params_file': '',
         'slam': 'False',
-        'map': '',
+        'map': '/tmp/mock_map.yaml',
         'use_sim_time': 'false',
         'autostart': 'true',
         'use_state_estimator': 'true',
@@ -125,7 +123,6 @@ def test_v0_1_localization_requires_non_empty_map_argument():
         'base_controller_name': 'base_controller',
         'controller_manager_name': '/controller_manager_agv',
         'use_controller_spawners': 'false',
-        'use_nav2': 'true',
         'params_file': '',
         'slam': 'False',
         'map': '',
@@ -168,6 +165,7 @@ def test_public_bringup_no_longer_declares_cmd_vel_adapter_toggle():
     source = bringup_path.read_text(encoding='utf-8')
 
     assert 'use_cmd_vel_adapter' not in source
+    assert 'use_nav2' not in source
 
 
 def test_public_bringup_starts_wheel_odom_navigator_node():

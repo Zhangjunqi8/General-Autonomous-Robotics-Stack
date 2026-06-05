@@ -20,7 +20,6 @@ def generate_launch_description():
         DeclareLaunchArgument('map_yaml_file', default_value=''),
         DeclareLaunchArgument('nav_params_file', default_value=''),
         DeclareLaunchArgument('base_controller_name', default_value='base_controller'),
-        DeclareLaunchArgument('use_nav2', default_value='true'),
         DeclareLaunchArgument('use_composition', default_value='False'),
     ]
 
@@ -47,7 +46,6 @@ def generate_launch_description():
             'base_controller_name': LaunchConfiguration('base_controller_name'),
             'use_controller_spawners': 'false',
             'use_sim_time': LaunchConfiguration('use_sim_time'),
-            'use_nav2': LaunchConfiguration('use_nav2'),
             'use_composition': LaunchConfiguration('use_composition'),
         }.items(),
     )

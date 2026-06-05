@@ -299,10 +299,9 @@ def _launch_setup(context, *args, **kwargs):
     robot_version = LaunchConfiguration('robot_version').perform(context)
     if robot_version not in ('v0_1', 'v0_2'):
         raise RuntimeError('robot_version must be one of: v0_1, v0_2')
-    if _as_bool(LaunchConfiguration('use_nav2').perform(context)):
-        map_yaml = LaunchConfiguration('map').perform(context)
-        if not map_yaml:
-            raise RuntimeError('localization requires a non-empty map yaml file')
+    map_yaml = LaunchConfiguration('map').perform(context)
+    if not map_yaml:
+        raise RuntimeError('localization requires a non-empty map yaml file')
 
     pkg_share = get_package_share_directory('hanmole_navigation')
     nav2_share = get_package_share_directory('nav2_bringup')
@@ -387,76 +386,75 @@ def _launch_setup(context, *args, **kwargs):
             )
         )
 
-    if _as_bool(LaunchConfiguration('use_nav2').perform(context)):
-        configured_params = _build_configured_nav2_params(
-            nav2_params,
-            namespace_value,
-            use_namespace_value,
-            autostart,
-            map_yaml,
-        )
-        configured_params_path = str(configured_params.evaluate(context))
-        nav2_launch_dir = os.path.join(nav2_share, 'launch')
-        actions.extend([
-            SetEnvironmentVariable('RCUTILS_LOGGING_BUFFERED_STREAM', '1'),
-            GroupAction(
-                [
-                    PushROSNamespace(condition=IfCondition(use_namespace), namespace=namespace),
-                    Node(
-                        condition=IfCondition(use_composition),
-                        name='nav2_container',
-                        package='rclcpp_components',
-                        executable='component_container_isolated',
-                        parameters=[configured_params, {'autostart': autostart}],
-                        arguments=['--ros-args', '--log-level', log_level],
-                        remappings=_navigation_remappings(),
-                        output='screen',
+    configured_params = _build_configured_nav2_params(
+        nav2_params,
+        namespace_value,
+        use_namespace_value,
+        autostart,
+        map_yaml,
+    )
+    configured_params_path = str(configured_params.evaluate(context))
+    nav2_launch_dir = os.path.join(nav2_share, 'launch')
+    actions.extend([
+        SetEnvironmentVariable('RCUTILS_LOGGING_BUFFERED_STREAM', '1'),
+        GroupAction(
+            [
+                PushROSNamespace(condition=IfCondition(use_namespace), namespace=namespace),
+                Node(
+                    condition=IfCondition(use_composition),
+                    name='nav2_container',
+                    package='rclcpp_components',
+                    executable='component_container_isolated',
+                    parameters=[configured_params, {'autostart': autostart}],
+                    arguments=['--ros-args', '--log-level', log_level],
+                    remappings=_navigation_remappings(),
+                    output='screen',
+                ),
+                IncludeLaunchDescription(
+                    PythonLaunchDescriptionSource(
+                        os.path.join(nav2_launch_dir, 'slam_launch.py')
                     ),
-                    IncludeLaunchDescription(
-                        PythonLaunchDescriptionSource(
-                            os.path.join(nav2_launch_dir, 'slam_launch.py')
-                        ),
-                        condition=IfCondition(LaunchConfiguration('slam')),
-                        launch_arguments={
-                            'namespace': namespace,
-                            'use_sim_time': use_sim_time_value,
-                            'autostart': autostart_value,
-                            'use_respawn': use_respawn_value,
-                            'params_file': configured_params_path,
-                        }.items(),
+                    condition=IfCondition(LaunchConfiguration('slam')),
+                    launch_arguments={
+                        'namespace': namespace,
+                        'use_sim_time': use_sim_time_value,
+                        'autostart': autostart_value,
+                        'use_respawn': use_respawn_value,
+                        'params_file': configured_params_path,
+                    }.items(),
+                ),
+                IncludeLaunchDescription(
+                    PythonLaunchDescriptionSource(
+                        os.path.join(nav2_launch_dir, 'localization_launch.py')
                     ),
-                    IncludeLaunchDescription(
-                        PythonLaunchDescriptionSource(
-                            os.path.join(nav2_launch_dir, 'localization_launch.py')
-                        ),
-                        condition=UnlessCondition(LaunchConfiguration('slam')),
-                        launch_arguments={
-                            'namespace': namespace,
-                            'map': map_yaml,
-                            'use_sim_time': use_sim_time_value,
-                            'autostart': autostart_value,
-                            'params_file': configured_params_path,
-                            'use_composition': use_composition_value,
-                            'use_respawn': use_respawn_value,
-                            'container_name': container_name_value,
-                        }.items(),
-                    ),
-                    _create_navigation_node_actions(
-                        configured_params,
-                        use_sim_time,
-                        use_respawn,
-                        log_level,
-                    ),
-                    _create_navigation_composable_actions(
-                        configured_params,
-                        namespace,
-                        container_name,
-                        use_sim_time,
-                        log_level,
-                    ),
-                ]
-            ),
-        ])
+                    condition=UnlessCondition(LaunchConfiguration('slam')),
+                    launch_arguments={
+                        'namespace': namespace,
+                        'map': map_yaml,
+                        'use_sim_time': use_sim_time_value,
+                        'autostart': autostart_value,
+                        'params_file': configured_params_path,
+                        'use_composition': use_composition_value,
+                        'use_respawn': use_respawn_value,
+                        'container_name': container_name_value,
+                    }.items(),
+                ),
+                _create_navigation_node_actions(
+                    configured_params,
+                    use_sim_time,
+                    use_respawn,
+                    log_level,
+                ),
+                _create_navigation_composable_actions(
+                    configured_params,
+                    namespace,
+                    container_name,
+                    use_sim_time,
+                    log_level,
+                ),
+            ]
+        ),
+    ])
 
     return actions
 
@@ -487,11 +485,6 @@ def generate_launch_description():
             'use_controller_spawners',
             default_value='true',
             description='Spawn joint_state_broadcaster and base controller.',
-        ),
-        DeclareLaunchArgument(
-            'use_nav2',
-            default_value='true',
-            description='Include Nav2 localization and navigation actions.',
         ),
         DeclareLaunchArgument(
             'params_file',

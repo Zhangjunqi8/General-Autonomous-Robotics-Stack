@@ -75,7 +75,6 @@
 | `map_yaml_file` | `""` | `ekf_odom` 模式下 Nav2 使用的静态地图 yaml |
 | `nav_params_file` | `""` | Nav2 参数覆盖文件；为空时使用包内默认参数 |
 | `base_controller_name` | `base_controller` | 底盘控制器名称 |
-| `use_nav2` | `true` | 是否实际启动 Nav2；通常仅 `ekf_odom` 模式为 `true` |
 
 ## 运行
 
@@ -93,16 +92,6 @@ ros2 launch hanmole_navigation bringup.launch.py \
   robot_version:=v0_2 \
   nav_mode:=ekf_odom \
   map_yaml_file:=/abs/path/to/map.yaml
-```
-
-如果只想验证参数拼装而暂时不真正启动 Nav2：
-
-```bash
-ros2 launch hanmole_navigation bringup.launch.py \
-  robot_version:=v0_1 \
-  nav_mode:=ekf_odom \
-  map_yaml_file:=/abs/path/to/map.yaml \
-  use_nav2:=false
 ```
 
 直接启用基于 `/odom` 的简化版导航：
