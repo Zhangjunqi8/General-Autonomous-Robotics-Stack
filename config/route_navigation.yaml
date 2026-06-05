@@ -1,0 +1,44 @@
+route_follower:
+  ros__parameters:
+    odom_topic: "/odom"
+    scan_topic: "/scan"
+    cmd_vel_topic: "/cmd_vel"
+    state_topic: "/hanmole_navigation/route_state"
+    base_frame: "base_footprint"
+    routes_file: "/home/hanmole/ros2_ws/src/hanmole_navigation/config/routes.yaml"
+    default_route_name: "main_route"
+    control_rate_hz: 20.0
+    footprint: "[[0.24, 0.17], [0.24, -0.17], [-0.24, -0.17], [-0.24, 0.17]]"
+    safety_margin_m: 0.10
+    safety_min_points: 3
+    safety_clear_duration_sec: 1.0
+    final_xy_tolerance_m: 0.03
+    final_yaw_tolerance_deg: 3.0
+    max_vx_mps: 0.48
+    max_vy_mps: 0.256
+    max_wz_radps: 0.88
+    max_ax_mps2: 0.72
+    max_ay_mps2: 0.48
+    max_awz_radps2: 1.60
+    primitive_snap_yaw_to_90deg: true
+    primitive_yaw_snap_tolerance_deg: 15.0
+    primitive_rotate_90_cost_m: 0.4
+    primitive_min_segment_m: 0.03
+    primitive_max_strafe_m: 0.05
+    primitive_xy_tolerance_m: 0.03
+    primitive_yaw_tolerance_deg: 3.0
+    primitive_move_yaw_gate_deg: 8.0
+    primitive_kx: 0.9
+    primitive_ky: 0.55
+    primitive_trim_max_vy_mps: 0.03
+    primitive_kyaw_hold: 1.0
+    primitive_kyaw_rotate: 1.0
+    primitive_target_lateral_biases: ""
+
+route_recorder:
+  ros__parameters:
+    odom_topic: "/odom"
+    routes_file: "/home/hanmole/ros2_ws/src/hanmole_navigation/config/routes.yaml"
+    state_topic: "/hanmole_navigation/route_record_state"
+    record_spacing_m: 0.05
+    record_yaw_spacing_deg: 3.0
