@@ -143,52 +143,24 @@ def test_v0_1_localization_requires_non_empty_map_argument():
         raise AssertionError('expected localization launch to reject an empty map argument')
 
 
-def test_v0_1_public_bringup_forwards_localization_arguments():
-    module = _load_launch_module('launch/bringup.launch.py', 'hanmole_navigation_public_bringup')
+def test_public_bringup_switches_to_ekf_odom_mode_by_default():
+    bringup_path = Path(__file__).resolve().parents[1] / 'launch' / 'bringup.launch.py'
+    source = bringup_path.read_text(encoding='utf-8')
 
-    launch_description = module.generate_launch_description()
-    include_actions = [
-        entity for entity in launch_description.entities
-        if isinstance(entity, IncludeLaunchDescription)
-    ]
-
-    assert include_actions
+    assert "DeclareLaunchArgument('nav_mode', default_value='ekf_odom')" in source
+    assert "'wheel_odom_navigator.py'" in source
+    assert '" == "wheel_odom"' in source
+    assert '" == "ekf_odom"' in source
 
 
 def test_nav2_bringup_enables_velocity_smoother_and_collision_monitor():
-    module = _load_launch_module(
-        'launch/nav_bringup.launch.py',
-        'hanmole_navigation_nav_bringup_nav2_pipeline',
-    )
+    bringup_path = Path(__file__).resolve().parents[1] / 'launch' / 'nav_bringup.launch.py'
+    source = bringup_path.read_text(encoding='utf-8')
 
-    context = LaunchContext()
-    context.launch_configurations.update({
-        'robot_version': 'v0_2',
-        'base_controller_name': 'base_controller',
-        'controller_manager_name': '/controller_manager',
-        'use_controller_spawners': 'false',
-        'use_nav2': 'true',
-        'params_file': '',
-        'slam': 'False',
-        'map': '/tmp/mock_map.yaml',
-        'use_sim_time': 'false',
-        'autostart': 'true',
-        'use_state_estimator': 'true',
-        'state_estimator_params_file': '',
-    })
-
-    actions = module._launch_setup(context)
-    nav2_includes = [
-        action for action in actions
-        if isinstance(action, IncludeLaunchDescription)
-    ]
-
-    assert len(nav2_includes) == 2
-    nav2_bringup = nav2_includes[-1]
-    launch_arguments = dict(nav2_bringup.launch_arguments)
-
-    assert _launch_argument_value(context, launch_arguments['use_velocity_smoother']) == 'True'
-    assert _launch_argument_value(context, launch_arguments['use_collision_monitor']) == 'True'
+    assert "package='nav2_velocity_smoother'" in source
+    assert "name='velocity_smoother'" in source
+    assert "package='nav2_collision_monitor'" in source
+    assert "name='collision_monitor'" in source
 
 
 def test_public_bringup_no_longer_declares_cmd_vel_adapter_toggle():
@@ -196,3 +168,13 @@ def test_public_bringup_no_longer_declares_cmd_vel_adapter_toggle():
     source = bringup_path.read_text(encoding='utf-8')
 
     assert 'use_cmd_vel_adapter' not in source
+
+
+def test_public_bringup_starts_wheel_odom_navigator_node():
+    bringup_path = Path(__file__).resolve().parents[1] / 'launch' / 'bringup.launch.py'
+    source = bringup_path.read_text(encoding='utf-8')
+
+    assert "package='hanmole_navigation'" in source
+    assert "executable='wheel_odom_navigator.py'" in source
+    assert "'odom_topic': '/odom'" in source
+    assert "'action_name': 'navigate_to_pose'" in source

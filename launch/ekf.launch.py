@@ -24,7 +24,7 @@ def _launch_setup(context, *args, **kwargs):
     robot_version = LaunchConfiguration('robot_version').perform(context)
     params_file = LaunchConfiguration('params_file').perform(context)
     resolved_params_file = params_file or str(_default_params_path(robot_version))
-    odom_input_topic = '/wheel_odom'
+    odom_input_topic = '/odom'
 
     return [
         Node(
