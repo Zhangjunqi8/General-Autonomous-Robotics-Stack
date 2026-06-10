@@ -316,7 +316,7 @@ collision_monitor:
     cmd_vel_out_topic: "cmd_vel"
     state_topic: "collision_monitor_state"
     transform_tolerance: 0.30
-    source_timeout: 0.20
+    source_timeout: 1.00
     base_shift_correction: true
     stop_pub_timeout: 0.10
 
@@ -324,7 +324,7 @@ collision_monitor:
 
     FootprintStop:
       type: "polygon"
-      points: "[[0.34, 0.27], [0.34, -0.27], [-0.34, -0.27], [-0.34, 0.27]]"
+      points: "[[0.40, 0.18], [0.40, -0.18], [-0.25, -0.18], [-0.25, 0.18]]"
       action_type: "stop"
       min_points: 1
       visualize: true
@@ -413,7 +413,7 @@ collision_monitor:
     observation_sources: ["scan"]
 
     scan:
-      source_timeout: 0.20
+      source_timeout: 1.00
       type: "scan"
       topic: "/scan"
       enabled: true
@@ -422,8 +422,8 @@ global_costmap:
   global_costmap:
     ros__parameters:
       use_sim_time: False
-      update_frequency: 2.0
-      publish_frequency: 2.0
+      update_frequency: 5.0
+      publish_frequency: 5.0
       always_send_full_costmap: True
       global_frame: map
       robot_base_frame: base_footprint
