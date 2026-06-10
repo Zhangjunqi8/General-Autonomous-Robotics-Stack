@@ -3,14 +3,14 @@
 `hanmole_navigation` 是瀚墨机器人的导航包，对外提供统一的导航入口：
 
 - `nav_mode:=ekf_odom` 时装配 Nav2 + EKF 导航链
-- `nav_mode:=wheel_odom` 时装配基于 `/odom` 的简化版 `NavigateToPose`
+- `nav_mode:=wheel_odom` 时装配使用纯轮式里程计 `/odom` 的 Nav2 导航链
 - 导航可视化与参数资产
 
-`launch/bringup.launch.py` 是本包唯一对外文档化的导航聚合入口。它负责持有导航参数真值、地图路径接口和 Nav2 场景装配；`nav_bringup.launch.py` 仅作为包内实现细节保留。
+`launch/bringup.launch.py` 是本包唯一对外文档化的导航聚合入口。它负责持有导航参数真值、地图路径接口和 Nav2 场景装配。
 
 ## 定位
 
-本包是 **导航聚合入口 + Nav2 资产包**，同时保留 wheel odom 模式下的轻量导航实现。
+本包是 **导航聚合入口 + Nav2 资产包**。
 
 它应当持有：
 
@@ -56,7 +56,7 @@
 职责分工如下：
 
 - `hanmole_bringup`：系统级场景装配，只 include 本包 `launch/bringup.launch.py`
-- `hanmole_navigation`：导航参数、地图、行为树、可视化、导航场景装配，以及 `wheel_odom` 模式导航入口
+- `hanmole_navigation`：导航参数、地图、行为树、可视化和导航场景装配
 - `hanmole_slam`：建图与地图保存
 - `hanmole_multi_robot`：多机器人协同
 - `hanmole_controllers`：底盘执行控制器，发布 `/odom`
@@ -72,7 +72,7 @@
 | `robot_version` | `v0_2` | 机器人版本，如 `v0_1`、`v0_2` |
 | `use_sim_time` | `false` | 是否使用仿真时间 |
 | `nav_mode` | `ekf_odom` | 支持 `ekf_odom` 或 `wheel_odom` |
-| `map_yaml_file` | `""` | `ekf_odom` 模式下 Nav2 使用的静态地图 yaml |
+| `nav_map_yaml_file` | `""` | `ekf_odom` 模式下 Nav2 使用的静态地图 yaml |
 | `nav_params_file` | `""` | Nav2 参数覆盖文件；为空时使用包内默认参数 |
 | `base_controller_name` | `base_controller` | 底盘控制器名称 |
 
@@ -91,13 +91,21 @@ source install/setup.bash
 ros2 launch hanmole_navigation bringup.launch.py \
   robot_version:=v0_2 \
   nav_mode:=ekf_odom \
-  map_yaml_file:=/abs/path/to/map.yaml
+  nav_map_yaml_file:=/abs/path/to/map.yaml
 ```
 
-直接启用基于 `/odom` 的简化版导航：
+直接启用基于纯轮式里程计 `/odom` 的导航：
 
 ```bash
 ros2 launch hanmole_navigation bringup.launch.py \
   robot_version:=v0_1 \
   nav_mode:=wheel_odom
 ```
+
+## Startup Orchestration
+
+- `nav_mode=ekf_odom` 时，启动编排等待 `/scan` 和 `/odometry/filtered`
+- `nav_mode=wheel_odom` 时，启动编排等待 `/scan` 和 `/odom`
+- localization 与 navigation 都不是开机即自动激活，而是由 `nav2_target_gateway_node` 分阶段调用 lifecycle manager
+- 自动流程顺序为：固定延迟 3 秒 -> 等输入话题新鲜 -> 等 `odom -> base_footprint` -> 启动 localization -> 自动发布 `/initialpose` -> 等 `map -> base_footprint` -> 启动 navigation
+- 在导航栈进入 ready 前，`/hanmole/agv/navigate_to_pose` 会返回 `navigation stack not ready`

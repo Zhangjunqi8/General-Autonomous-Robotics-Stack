@@ -1,0 +1,43 @@
+nav2_target_gateway:
+  ros__parameters:
+    target_file: "/tmp/hanmole_navigation/target_map.yaml"
+    target_group: "default"
+    nav_mode: "ekf_odom"
+    amcl_pose_topic: "/amcl_pose"
+    scan_topic: "/scan"
+    filtered_odom_topic: "/odometry/filtered"
+    raw_odom_topic: "/odom"
+    odom_topic: ""
+    map_topic: "/map"
+    robot_base_frame: "base_footprint"
+    odom_frame: "odom"
+    map_frame: "map"
+    localization_manager_service: "/lifecycle_manager_localization/manage_nodes"
+    navigation_manager_service: "/lifecycle_manager_navigation/manage_nodes"
+    map_server_state_service: "/map_server/get_state"
+    amcl_state_service: "/amcl/get_state"
+    planner_server_state_service: "/planner_server/get_state"
+    controller_server_state_service: "/controller_server/get_state"
+    bt_navigator_state_service: "/bt_navigator/get_state"
+    startup_delay_ms: 3000
+    input_freshness_timeout_ms: 500
+    startup_poll_period_ms: 5
+    tf_freshness_threshold_ms: 2
+    lifecycle_request_timeout_ms: 12000
+    stable_tf_success_count: 3
+    navigate_action_name: "/navigate_to_pose"
+    navigate_service_name: "/hanmole/agv/navigate_to_pose"
+    cancel_service_name: "/hanmole/agv/navigate_cancel"
+    set_initial_pose_service_name: "/hanmole/agv/set_initial_pose"
+    nav_status_topic: "/nav_status"
+    target_state_topic: "/hanmole_navigation/target_state"
+    initial_pose_topic: "/initialpose"
+    action_timeout_ms: 3000
+    goal_xy_tolerance: 0.05
+    goal_yaw_tolerance: 0.03
+
+target_catalog_publisher:
+  ros__parameters:
+    target_file: "/tmp/hanmole_navigation/target_map.yaml"
+    target_group: "default"
+    pose_list_topic: "/hanmole/agv/pose_list"

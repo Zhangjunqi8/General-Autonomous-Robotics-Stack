@@ -1,0 +1,29 @@
+frame: map
+default_group: default
+initial_pose_target: HOME
+target_groups:
+  default:
+    HOME:
+      poses:
+        - {x: 0.030449330806732178, y: -0.20562458038330078, yaw: -0.005340576171875}
+    "碳酸饮料区":
+      poses:
+        - {x: 0.4, y: 0.0, yaw: 0.0}
+    "超市入口":
+      poses:
+        - {x: 0.8, y: 0.0, yaw: 0.0}
+    "补货备货仓":
+      poses:
+        - {x: 1.2, y: 0.0, yaw: 0.0}
+    "矿泉水区":
+      poses:
+        - {x: 1.6, y: 0.0, yaw: 0.0}
+    "乳制品区":
+      poses:
+        - {x: 1.6, y: 0.0, yaw: 1.57}
+    "果汁饮品区":
+      poses:
+        - {x: 1.6, y: 0.0, yaw: -1.57}
+    "咖啡茶饮区":
+      poses:
+        - {x: 2.0, y: 0.0, yaw: 0.0}

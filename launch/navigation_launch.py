@@ -1,4 +1,4 @@
-"""Bring up Hanmole AGV controller and Nav2 by robot_version."""
+"""Bring up Nav2 and Hanmole target gateway by robot_version."""
 
 import os
 
@@ -24,21 +24,15 @@ def _as_bool(value: str) -> bool:
     return value.lower() in ('1', 'true', 'yes', 'on')
 
 
-def _launch_config_as_bool(context, name: str, default: str = 'false') -> bool:
-    return _as_bool(context.launch_configurations.get(name, default))
-
-
 def _default_robot_version() -> str:
     pkg_share = get_package_share_directory('hanmole_navigation')
     settings_path = os.path.join(pkg_share, 'config', 'settings.toml')
     with open(settings_path, 'rb') as settings_file:
         settings = tomllib.load(settings_file)
 
-    robot_version = settings.get('robot_settings', {}).get(
-        'robot_version', 'v0_1')
+    robot_version = settings.get('robot_settings', {}).get('robot_version', 'v0_1')
     if robot_version not in ('v0_1', 'v0_2'):
-        raise RuntimeError(
-            f'Invalid robot_version in {settings_path}: {robot_version}')
+        raise RuntimeError(f'Invalid robot_version in {settings_path}: {robot_version}')
     return robot_version
 
 
@@ -64,17 +58,20 @@ def _build_configured_nav2_params(
     namespace,
     use_namespace,
     autostart,
+    odom_topic,
     map_yaml='',
 ):
-    use_namespace_value = use_namespace
-    if isinstance(use_namespace, str):
-        use_namespace_value = use_namespace
     rewritten_source = ReplaceString(
         source_file=params_file,
         replacements={'<robot_namespace>': ('/', namespace)},
-        condition=IfCondition(use_namespace_value),
+        condition=IfCondition(use_namespace),
     )
-    param_rewrites = {'autostart': autostart}
+    param_rewrites = {
+        'autostart': autostart,
+        'bt_navigator.ros__parameters.odom_topic': odom_topic,
+        'controller_server.ros__parameters.odom_topic': odom_topic,
+        'velocity_smoother.ros__parameters.odom_topic': odom_topic,
+    }
     if map_yaml:
         param_rewrites['map_server.ros__parameters.yaml_filename'] = map_yaml
     return ParameterFile(
@@ -88,12 +85,7 @@ def _build_configured_nav2_params(
     )
 
 
-def _create_navigation_node_actions(
-    configured_params,
-    use_sim_time,
-    use_respawn,
-    log_level,
-):
+def _create_navigation_node_actions(configured_params, use_sim_time, use_respawn, log_level):
     remappings = _navigation_remappings()
     lifecycle_node_names = _navigation_lifecycle_nodes()
     controller_action = Node(
@@ -195,7 +187,7 @@ def _create_navigation_node_actions(
                 output='screen',
                 arguments=['--ros-args', '--log-level', log_level],
                 parameters=[
-                    {'autostart': LaunchConfiguration('autostart')},
+                    {'autostart': False},
                     {'node_names': lifecycle_node_names},
                 ],
             ),
@@ -268,29 +260,27 @@ def _create_navigation_composable_actions(
             parameters=[configured_params],
             remappings=remappings,
         ),
-        ComposableNode(
-            package='nav2_lifecycle_manager',
-            plugin='nav2_lifecycle_manager::LifecycleManager',
-            name='lifecycle_manager_navigation',
-            parameters=[
-                {
-                    'autostart': LaunchConfiguration('autostart'),
-                    'node_names': _navigation_lifecycle_nodes(),
-                }
-            ],
-        ),
-    ]
-
-    actions = [
-        SetParameter('use_sim_time', use_sim_time),
-        LoadComposableNodes(
-            target_container=(namespace, '/', container_name),
-            composable_node_descriptions=composable_nodes,
-        ),
+            ComposableNode(
+                package='nav2_lifecycle_manager',
+                plugin='nav2_lifecycle_manager::LifecycleManager',
+                name='lifecycle_manager_navigation',
+                parameters=[
+                    {
+                        'autostart': False,
+                        'node_names': _navigation_lifecycle_nodes(),
+                    }
+                ],
+            ),
     ]
     return GroupAction(
         condition=IfCondition(LaunchConfiguration('use_composition')),
-        actions=actions,
+        actions=[
+            SetParameter('use_sim_time', use_sim_time),
+            LoadComposableNodes(
+                target_container=(namespace, '/', container_name),
+                composable_node_descriptions=composable_nodes,
+            ),
+        ],
     )
 
 
@@ -305,103 +295,46 @@ def _launch_setup(context, *args, **kwargs):
 
     pkg_share = get_package_share_directory('hanmole_navigation')
     nav2_share = get_package_share_directory('nav2_bringup')
-    controller_params = os.path.join(
-        pkg_share, 'config', robot_version, 'ros2_controllers.yaml')
-    default_nav2_params = os.path.join(
-        pkg_share, 'config', robot_version, 'nav2_params.yaml')
-    default_ekf_params = os.path.join(
-        pkg_share, 'config', robot_version, 'ekf.yaml')
-
-    nav2_params = (
-        LaunchConfiguration('params_file').perform(context) or default_nav2_params)
-    ekf_params = (
-        LaunchConfiguration('state_estimator_params_file').perform(context) or default_ekf_params)
+    default_nav2_params = os.path.join(pkg_share, 'config', robot_version, 'nav2_params.yaml')
+    nav2_params = LaunchConfiguration('params_file').perform(context) or default_nav2_params
 
     namespace = LaunchConfiguration('namespace')
-    use_namespace = LaunchConfiguration('use_namespace')
     namespace_value = context.launch_configurations.get('namespace', '')
     use_namespace_value = context.launch_configurations.get('use_namespace', 'False')
     use_sim_time = LaunchConfiguration('use_sim_time')
+    nav_mode = LaunchConfiguration('nav_mode')
     autostart = LaunchConfiguration('autostart')
-    use_composition = LaunchConfiguration('use_composition')
     use_respawn = LaunchConfiguration('use_respawn')
     log_level = LaunchConfiguration('log_level')
     container_name = LaunchConfiguration('container_name')
-    use_sim_time_value = use_sim_time.perform(context)
-    autostart_value = autostart.perform(context)
-    use_composition_value = context.launch_configurations.get(
-        'use_composition', 'True')
-    use_respawn_value = context.launch_configurations.get(
-        'use_respawn', 'False')
-    container_name_value = context.launch_configurations.get(
-        'container_name', 'nav2_container')
-    base_controller_name = LaunchConfiguration(
-        'base_controller_name').perform(context)
-    controller_manager_name = LaunchConfiguration(
-        'controller_manager_name').perform(context)
-
-    actions = []
-
-    if _as_bool(LaunchConfiguration('use_controller_spawners').perform(context)):
-        actions.extend([
-            Node(
-                package='controller_manager',
-                executable='spawner',
-                name='spawn_joint_state_broadcaster',
-                output='screen',
-                arguments=[
-                    'joint_state_broadcaster',
-                    '--controller-manager',
-                    controller_manager_name,
-                    '--param-file',
-                    controller_params,
-                ],
-            ),
-            Node(
-                package='controller_manager',
-                executable='spawner',
-                name='spawn_base_controller',
-                output='screen',
-                arguments=[
-                    base_controller_name,
-                    '--controller-manager',
-                    controller_manager_name,
-                    '--param-file',
-                    controller_params,
-                ],
-            ),
-        ])
-
-    if _as_bool(LaunchConfiguration('use_state_estimator').perform(context)):
-        actions.append(
-            IncludeLaunchDescription(
-                PythonLaunchDescriptionSource(
-                    os.path.join(pkg_share, 'launch', 'ekf.launch.py')),
-                launch_arguments={
-                    'robot_version': robot_version,
-                    'base_controller_name': base_controller_name,
-                    'params_file': ekf_params,
-                    'use_sim_time': use_sim_time,
-                }.items(),
-            )
-        )
-
+    use_respawn_value = context.launch_configurations.get('use_respawn', 'False')
+    use_composition_value = context.launch_configurations.get('use_composition', 'True')
+    container_name_value = context.launch_configurations.get('container_name', 'nav2_container')
+    nav_mode_value = context.launch_configurations.get('nav_mode', 'ekf_odom')
+    odom_topic = '/odometry/filtered' if nav_mode_value == 'ekf_odom' else '/odom'
     configured_params = _build_configured_nav2_params(
         nav2_params,
         namespace_value,
         use_namespace_value,
         autostart,
+        odom_topic,
         map_yaml,
     )
     configured_params_path = str(configured_params.evaluate(context))
     nav2_launch_dir = os.path.join(nav2_share, 'launch')
-    actions.extend([
+    target_file = os.path.join(pkg_share, 'config', 'target_map.yaml')
+    target_gateway_params = os.path.join(pkg_share, 'config', 'ekf_target_navigation.yaml')
+
+    return [
         SetEnvironmentVariable('RCUTILS_LOGGING_BUFFERED_STREAM', '1'),
         GroupAction(
             [
-                PushROSNamespace(condition=IfCondition(use_namespace), namespace=namespace),
+                PushROSNamespace(
+                    condition=IfCondition(LaunchConfiguration('use_namespace')),
+                    namespace=namespace,
+                ),
                 Node(
-                    condition=IfCondition(use_composition),
+                    condition=IfCondition(LaunchConfiguration('use_composition')),
                     name='nav2_container',
                     package='rclcpp_components',
                     executable='component_container_isolated',
@@ -417,8 +350,8 @@ def _launch_setup(context, *args, **kwargs):
                     condition=IfCondition(LaunchConfiguration('slam')),
                     launch_arguments={
                         'namespace': namespace,
-                        'use_sim_time': use_sim_time_value,
-                        'autostart': autostart_value,
+                        'use_sim_time': use_sim_time.perform(context),
+                        'autostart': autostart.perform(context),
                         'use_respawn': use_respawn_value,
                         'params_file': configured_params_path,
                     }.items(),
@@ -431,20 +364,15 @@ def _launch_setup(context, *args, **kwargs):
                     launch_arguments={
                         'namespace': namespace,
                         'map': map_yaml,
-                        'use_sim_time': use_sim_time_value,
-                        'autostart': autostart_value,
+                        'use_sim_time': use_sim_time.perform(context),
+                        'autostart': 'false',
                         'params_file': configured_params_path,
                         'use_composition': use_composition_value,
                         'use_respawn': use_respawn_value,
                         'container_name': container_name_value,
                     }.items(),
                 ),
-                _create_navigation_node_actions(
-                    configured_params,
-                    use_sim_time,
-                    use_respawn,
-                    log_level,
-                ),
+                _create_navigation_node_actions(configured_params, use_sim_time, use_respawn, log_level),
                 _create_navigation_composable_actions(
                     configured_params,
                     namespace,
@@ -452,48 +380,41 @@ def _launch_setup(context, *args, **kwargs):
                     use_sim_time,
                     log_level,
                 ),
+                Node(
+                    package='hanmole_navigation',
+                    executable='nav2_target_gateway_node',
+                    name='nav2_target_gateway',
+                    output='screen',
+                    parameters=[
+                        target_gateway_params,
+                        {
+                            'target_file': target_file,
+                            'nav_mode': LaunchConfiguration('nav_mode'),
+                        },
+                    ],
+                ),
+                Node(
+                    package='hanmole_navigation',
+                    executable='target_catalog_publisher_node',
+                    name='target_catalog_publisher',
+                    output='screen',
+                    parameters=[
+                        target_gateway_params,
+                        {'target_file': target_file},
+                    ],
+                ),
             ]
         ),
-    ])
-
-    return actions
+    ]
 
 
 def generate_launch_description():
     default_robot_version = _default_robot_version()
 
     return LaunchDescription([
-        DeclareLaunchArgument(
-            'robot_version',
-            default_value=default_robot_version,
-            description=(
-                'AGV version. Default comes from config/settings.toml; '
-                'use robot_version:=v0_1|v0_2 to override.'
-            ),
-        ),
-        DeclareLaunchArgument(
-            'base_controller_name',
-            default_value='base_controller',
-            description='Base controller name loaded by controller_manager.',
-        ),
-        DeclareLaunchArgument(
-            'controller_manager_name',
-            default_value='/controller_manager',
-            description='controller_manager service namespace.',
-        ),
-        DeclareLaunchArgument(
-            'use_controller_spawners',
-            default_value='true',
-            description='Spawn joint_state_broadcaster and base controller.',
-        ),
-        DeclareLaunchArgument(
-            'params_file',
-            default_value='',
-            description=(
-                'Optional Nav2 params file. Empty uses '
-                'config/<robot_version>/nav2_params.yaml.'
-            ),
-        ),
+        DeclareLaunchArgument('robot_version', default_value=default_robot_version),
+        DeclareLaunchArgument('nav_mode', default_value='ekf_odom'),
+        DeclareLaunchArgument('params_file', default_value=''),
         DeclareLaunchArgument('slam', default_value='False'),
         DeclareLaunchArgument('map', default_value=''),
         DeclareLaunchArgument('use_sim_time', default_value='false'),
@@ -504,17 +425,5 @@ def generate_launch_description():
         DeclareLaunchArgument('use_respawn', default_value='False'),
         DeclareLaunchArgument('log_level', default_value='info'),
         DeclareLaunchArgument('container_name', default_value='nav2_container'),
-
-        DeclareLaunchArgument(
-            'use_state_estimator',
-            default_value='true',
-            description='Start robot_localization EKF',
-        ),
-        DeclareLaunchArgument(
-            'state_estimator_params_file',
-            default_value='',
-            description='Optional EKF params file override',
-        ),
-
         OpaqueFunction(function=_launch_setup),
     ])

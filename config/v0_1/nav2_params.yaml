@@ -1,27 +1,35 @@
 # HanMole v0_1 Nav2 麦克纳姆导航基线配置
 #
 # 设计目标：
-# 1. AMCL 按全向底盘建模，避免横移时定位模型退化为差速假设。
-# 2. 全局规划按全向 / 非圆形底盘能力建模，使用 Smac Lattice + omni primitives。
-# 3. 局部控制使用 MPPI Omni，显式保留横移、倒车与旋转能力。
+# 1. AMCL 仍按全向底盘建模，避免定位层因为麦克纳姆横移而退化。
+# 2. 但导航控制层收敛为“先转向、再前进/倒车、末端对正”的非横移观感。
+# 3. 全局规划使用 Navfn，局部控制使用 Regulated Pure Pursuit。
 # 4. 速度命令链路固定为 cmd_vel_nav -> cmd_vel_smoothed -> /cmd_vel。
-# 5. footprint 直接使用 v0_1 底盘碰撞盒在 base_footprint 平面的投影。
+# 5. collision_monitor 保留基础 stop / approach 保护，不再使用全向 velocity polygons。
 
 amcl:
   ros__parameters:
+    # 是否使用仿真时钟。实机运行保持 False。
     use_sim_time: False
+    # alpha1~alpha5 是 AMCL 里程计运动噪声参数。
+    # 数值越大，AMCL 越不相信里程计，越依赖激光匹配；数值太大则定位会更抖。
+    # v0_1 使用全向底盘，因此这些参数需要允许横移和旋转带来的误差。
     alpha1: 0.20
     alpha2: 0.20
     alpha3: 0.15
     alpha4: 0.15
     alpha5: 0.10
+    # 使用全向底盘运动模型，避免麦克纳姆横移时退化成差速运动假设。
     robot_model_type: "nav2_amcl::OmniMotionModel"
     base_frame_id: "base_footprint"
+    # beamskip 相关参数用于激光异常时跳过部分 beam，减少局部遮挡对定位的破坏。
     beam_skip_distance: 0.5
     beam_skip_error_threshold: 0.9
     beam_skip_threshold: 0.3
     do_beamskip: false
     global_frame_id: "map"
+    # 激光模型参数。laser_likelihood_max_dist 控制激光命中概率衰减范围；
+    # max_beams / 粒子数越大，定位通常越稳，但 CPU 占用也越高。
     lambda_short: 0.1
     laser_likelihood_max_dist: 3.0
     laser_max_range: 20.0
@@ -40,7 +48,10 @@ amcl:
     sigma_hit: 0.2
     tf_broadcast: true
     scan_topic: "/scan"
+    # TF 容差越大，系统越能容忍时间戳轻微不齐；过大可能掩盖 TF 延迟问题。
     transform_tolerance: 0.5
+    # 机器人累计移动超过这两个阈值后才触发一次粒子滤波更新。
+    # 阈值越小，定位更新更频繁、更稳，但 CPU 更高。
     update_min_a: 0.03
     update_min_d: 0.03
     z_hit: 0.5
@@ -50,19 +61,24 @@ amcl:
 
 map_server:
   ros__parameters:
+    # 地图服务器负责发布静态栅格地图；yaml_filename 会在 launch 中被重写。
     use_sim_time: False
     yaml_filename: ""
 
 bt_navigator:
   ros__parameters:
+    # 行为树导航器是 Nav2 的任务编排入口，负责串起规划、控制和恢复行为。
     use_sim_time: False
     global_frame: map
     robot_base_frame: base_footprint
+    # 导航器读取的里程计 topic。这里使用 EKF 融合后的 /odometry/filtered。
     odom_topic: /odometry/filtered
+    # 这些超时主要影响行为树节点等待各 action / service 的容忍时间。
     bt_loop_duration: 10
     default_server_timeout: 20
     wait_for_service_timeout: 1000
     action_server_result_timeout: 900.0
+    # 保持默认的单点导航和多点导航两种 navigator。
     navigators: ["navigate_to_pose", "navigate_through_poses"]
     navigate_to_pose:
       plugin: "nav2_bt_navigator::NavigateToPoseNavigator"
@@ -74,12 +90,18 @@ bt_navigator:
 
 controller_server:
   ros__parameters:
+    # controller_server 负责把全局路径转换成实时速度命令。
+    # v0_1 在这里RPP 风格，目标是减少横移，优先先转向再前进。
     use_sim_time: False
     controller_frequency: 20.0
+    # costmap_update_timeout 表示等待局部代价地图更新的最长时间。
+    # 过小容易因局部地图更新慢而报控制失败，过大则故障暴露变慢。
     costmap_update_timeout: 0.30
     enable_stamped_cmd_vel: True
+    # 小于这些阈值的速度会被视为 0。
+    # y 阈值设置得更大，相当于把很小的横移直接吞掉，避免残余侧移命令。
     min_x_velocity_threshold: 0.001
-    min_y_velocity_threshold: 0.001
+    min_y_velocity_threshold: 0.5
     min_theta_velocity_threshold: 0.001
     failure_tolerance: 0.3
     publish_errors: True
@@ -92,149 +114,79 @@ controller_server:
     use_realtime_priority: false
 
     progress_checker:
+      # 进度检查器用于判断机器人是不是“长时间没真正移动”。
+      # 末端对正阶段可能主要是原地旋转，平移位移很小。
+      # 因此进一步降低位移阈值并放宽时间，避免 yaw 还没收完就被误判成没进展。
       plugin: "nav2_controller::SimpleProgressChecker"
       required_movement_radius: 0.05
-      movement_time_allowance: 6.0
+      movement_time_allowance: 30.0
 
     general_goal_checker:
-      plugin: "nav2_controller::SimpleGoalChecker"
-      # 麦克纳姆允许末端阶段横移靠近目标点，XY 可以比 yaw 更早收敛。
+      plugin: "nav2_controller::StoppedGoalChecker"
+      # StoppedGoalChecker 不仅检查 XY / yaw 误差，还要求底盘实际速度已接近 0。
+      # 这样可以避免 Nav2 在姿态刚进入容差、但车体还在惯性或估计滞后中继续转动时提前判成功。
       stateful: true
-      xy_goal_tolerance: 0.10
-      yaw_goal_tolerance: 0.20
+      # 进一步收紧终点判定：位置容差和姿态容差都更小。
+      # 这样不会出现“XY 已到，但 yaw 还差不少就直接判定成功”的情况。
+      xy_goal_tolerance: 0.05
+      yaw_goal_tolerance: 0.03
+      trans_stopped_velocity: 0.02
+      rot_stopped_velocity: 0.02
 
     FollowPath:
-      plugin: "nav2_mppi_controller::MPPIController"
-      time_steps: 56
-      model_dt: 0.05
-      batch_size: 2000
-      iteration_count: 1
-      prune_distance: 1.6
-      transform_tolerance: 0.15
-      temperature: 0.3
-      gamma: 0.015
-      motion_model: "Omni"
-      visualize: false
-      regenerate_noises: true
-      publish_optimal_trajectory: false
-      vx_std: 0.20
-      vy_std: 0.14
-      wz_std: 0.20
-      vx_max: 0.45
-      vx_min: -0.30
-      vy_max: 0.28
-      wz_max: 0.90
-      ax_max: 0.90
-      ax_min: -0.90
-      ay_max: 0.70
-      ay_min: -0.70
-      az_max: 1.20
-      TrajectoryVisualizer:
-        trajectory_step: 5
-        time_step: 3
-      TrajectoryValidator:
-        plugin: "mppi::DefaultOptimalTrajectoryValidator"
-        collision_lookahead_time: 2.0
-        consider_footprint: true
-      critics: [
-        "ConstraintCritic", "CostCritic", "GoalCritic",
-        "GoalAngleCritic", "PathAlignCritic", "PathFollowCritic",
-        "PathAngleCritic", "TwirlingCritic"]
-      ConstraintCritic:
-        enabled: true
-        cost_power: 1
-        cost_weight: 4.0
-      CostCritic:
-        enabled: true
-        cost_power: 1
-        cost_weight: 3.8
-        near_collision_cost: 253
-        critical_cost: 300.0
-        consider_footprint: true
-        collision_cost: 1000000.0
-        near_goal_distance: 0.7
-        trajectory_point_step: 2
-      GoalCritic:
-        enabled: true
-        cost_power: 1
-        cost_weight: 5.0
-        threshold_to_consider: 1.2
-      GoalAngleCritic:
-        enabled: true
-        cost_power: 1
-        # 降低终点朝向过调，避免低速横移时原地抖动。
-        cost_weight: 1.5
-        threshold_to_consider: 0.30
-      PathAlignCritic:
-        enabled: true
-        cost_power: 1
-        cost_weight: 10.0
-        max_path_occupancy_ratio: 0.07
-        trajectory_point_step: 4
-        threshold_to_consider: 0.35
-        offset_from_furthest: 18
-        use_path_orientations: false
-      PathFollowCritic:
-        enabled: true
-        cost_power: 1
-        cost_weight: 6.0
-        offset_from_furthest: 5
-        threshold_to_consider: 1.2
-      PathAngleCritic:
-        enabled: true
-        cost_power: 1
-        cost_weight: 0.8
-        offset_from_furthest: 4
-        threshold_to_consider: 0.30
-        max_angle_to_furthest: 1.2
-        mode: 0
-      TwirlingCritic:
-        enabled: true
-        cost_power: 1
-        cost_weight: 4.0
+      # RPP 核心局部控制器。
+      # 它本质上更像“沿路径前进/倒车，必要时先转向”，而不是 MPPI 那种全向采样优化器。
+      plugin: "nav2_regulated_pure_pursuit_controller::RegulatedPurePursuitController"
+      desired_linear_vel: 0.9
+      lookahead_dist: 0.8
+      min_lookahead_dist: 0.1
+      max_lookahead_dist: 1.0
+      lookahead_time: 1.0
+      # 在保持停稳判定的前提下，适度提高末端原地转向速度。
+      rotate_to_heading_angular_vel: 0.55
+      transform_tolerance: 0.1
+      use_velocity_scaled_lookahead_dist: false
+      min_approach_linear_velocity: 0.1
+      approach_velocity_scaling_dist: 0.6
+      use_collision_detection: true
+      max_allowed_time_to_collision_up_to_carrot: 1.0
+      use_regulated_linear_velocity_scaling: true
+      use_fixed_curvature_lookahead: false
+      curvature_lookahead_dist: 0.25
+      use_cost_regulated_linear_velocity_scaling: false
+      cost_scaling_dist: 0.3
+      cost_scaling_gain: 1.0
+      regulated_linear_scaling_min_radius: 0.9
+      regulated_linear_scaling_min_speed: 0.25
+      use_rotate_to_heading: true
+      allow_reversing: true
+      # 角差超过约 20 度时就优先先转头，再起步，更接近“末端主动对正”。
+      rotate_to_heading_min_angle: 0.35
+      max_angular_accel: 0.60
+      max_robot_pose_search_dist: 10.0
+      # 旧值 2.0 对室内小底盘过于保守，容易出现“前面明明还能走但控制器不敢走”。
+      min_distance_to_obstacle: 0.35
+      stateful: true
 
 planner_server:
   ros__parameters:
+    # planner_server 负责生成全局路径。
+    # 使用 Navfn，更接近传统车式导航的全局路径形态。
     use_sim_time: False
-    expected_planner_frequency: 10.0
+    expected_planner_frequency: 20.0
     planner_plugins: ["GridBased"]
 
     GridBased:
-      plugin: "nav2_smac_planner::SmacPlannerLattice"
-      tolerance: 0.10
-      downsample_costmap: false
+      # 这里必须写插件导出的真实类名；写成 package/Class 形式会导致 planner_server 启动失败。
+      # NavfnPlanner 输出标准 2D 栅格路径，不再显式规划横移 motion primitive。
+      plugin: "nav2_navfn_planner::NavfnPlanner"
+      tolerance: 0.5
+      use_astar: true
       allow_unknown: true
-      max_iterations: 1000000
-      max_on_approach_iterations: 2000
-      max_planning_time: 2.0
-      lookup_table_size: 20.0
-      minimum_turning_radius: 0.50
-      reverse_penalty: 1.15
-      rotation_penalty: 1.3
-      change_penalty: 0.0
-      non_straight_penalty: 1.05
-      cost_penalty: 2.0
-      retrospective_penalty: 0.015
-      analytic_expansion_ratio: 3.5
-      analytic_expansion_max_length: 5.0
-      analytic_expansion_max_cost: 200.0
-      analytic_expansion_max_cost_override: false
-      lattice_filepath: "/opt/ros/jazzy/share/nav2_smac_planner/sample_primitives/5cm_resolution/0.5m_turning_radius/omni/output.json"
-      cache_obstacle_heuristic: true
-      allow_reverse_expansion: true
-      allow_primitive_interpolation: true
-      downsample_obstacle_heuristic: false
-      smooth_path: true
-      smoother:
-        tolerance: 1.0e-10
-        max_iterations: 1000
-        w_data: 0.2
-        w_smooth: 0.3
-        do_refinement: True
-        refinement_num: 2
 
 behavior_server:
   ros__parameters:
+    # behavior_server 负责恢复行为，例如原地旋转、倒车、沿朝向直行等。
     use_sim_time: False
     enable_stamped_cmd_vel: True
     costmap_topic: local_costmap/costmap_raw
@@ -253,16 +205,19 @@ behavior_server:
     assisted_teleop:
       plugin: "nav2_behaviors::AssistedTeleop"
 
-    simulate_ahead_time: 0.2
-    max_rotational_vel: 0.60
-    min_rotational_vel: 0.10
-    rotational_acc_lim: 1.00
+    # 更强调快速原地转向和恢复。
+    simulate_ahead_time: 2.0
+    max_rotational_vel: 4.5
+    min_rotational_vel: 1.0
+    rotational_acc_lim: 5.0
     global_frame: odom
     robot_base_frame: base_footprint
-    transform_tolerance: 0.5
+    transform_tolerance: 0.1
 
 smoother_server:
   ros__parameters:
+    # smoother_server 负责对全局路径做几何平滑。
+    # 它平滑的是“路径形状”，不是最终底盘速度。
     use_sim_time: False
     smoother_plugins: ["simple_smoother"]
 
@@ -274,24 +229,29 @@ smoother_server:
 
 velocity_smoother:
   ros__parameters:
+    # velocity_smoother 位于控制链路末端：
+    # cmd_vel_nav -> cmd_vel_smoothed -> /cmd_vel。
+    # 非横移限幅：y 方向速度和加速度全部压成 0。
     use_sim_time: False
-    smoothing_frequency: 50.0
+    smoothing_frequency: 20.0
+    # 使用闭环平滑，参考实际里程计速度而不是只按命令推演，减少停转时的过冲。
     feedback: "CLOSED_LOOP"
     scale_velocities: False
     enable_stamped_cmd_vel: True
     cmd_vel_in_topic: "cmd_vel_nav"
     cmd_vel_out_topic: "cmd_vel_smoothed"
-    max_velocity: [0.45, 0.28, 0.90]
-    min_velocity: [-0.30, -0.28, -0.90]
-    max_accel: [0.90, 0.70, 1.20]
-    max_decel: [-0.90, -0.70, -1.20]
+    max_velocity: [0.9, 0.0, 1.0]
+    min_velocity: [-0.5, 0.0, -1.0]
+    max_accel: [0.5, 0.0, 1.0]
+    max_decel: [-1.0, 0.0, -1.0]
     odom_topic: "/odometry/filtered"
     odom_duration: 0.1
-    deadband_velocity: [0.002, 0.002, 0.02]
-    velocity_timeout: 0.20
+    deadband_velocity: [0.0, 0.0, 0.01]
+    velocity_timeout: 1.0
 
 waypoint_follower:
   ros__parameters:
+    # waypoint_follower 负责多点任务时逐点执行；当前主要保留默认能力。
     use_sim_time: False
     loop_rate: 20
     stop_on_failure: false
@@ -304,10 +264,14 @@ waypoint_follower:
 
 route_server:
   ros__parameters:
+    # route_server 目前仅保留基础配置，供后续路线级能力扩展。
     use_sim_time: False
 
 collision_monitor:
   ros__parameters:
+    # collision_monitor 是最终速度出口前的安全裁决器。
+    # 它不会重新规划路径，但可以直接把速度裁掉或停掉。
+    # 现场出现“规划正常但车不走”时，这一块是第一优先级排查对象之一。
     use_sim_time: False
     enable_stamped_cmd_vel: True
     base_frame_id: "base_footprint"
@@ -316,91 +280,26 @@ collision_monitor:
     cmd_vel_out_topic: "cmd_vel"
     state_topic: "collision_monitor_state"
     transform_tolerance: 0.30
-    source_timeout: 0.20
+    source_timeout: 1.00
     base_shift_correction: true
     stop_pub_timeout: 0.10
 
-    polygons: ["FootprintStop", "VelocityStop", "FootprintApproach"]
+    # 这里保留基础硬停和 approach 减速，避免“速度没有落进任何 polygon”导致直接卡死。
+    polygons: ["FootprintStop", "FootprintApproach"]
 
     FootprintStop:
+      # 进入这个固定 polygon 就直接停。
+      # 这里按实车最外轮廓 65 x 36 cm 配置，并给车头/车侧留少量余量。
       type: "polygon"
-      points: "[[0.34, 0.27], [0.34, -0.27], [-0.34, -0.27], [-0.34, 0.27]]"
+      points: "[[0.42, 0.20], [0.42, -0.20], [-0.34, -0.20], [-0.34, 0.20]]"
       action_type: "stop"
       min_points: 1
       visualize: true
       polygon_pub_topic: "footprint_stop_polygon"
       enabled: true
 
-    VelocityStop:
-      type: "velocity_polygon"
-      action_type: "stop"
-      min_points: 8
-      visualize: true
-      polygon_pub_topic: "velocity_polygon_stop"
-      enabled: true
-      holonomic: true
-      velocity_polygons: [
-        "rotation",
-        "translation_forward",
-        "translation_left",
-        "translation_backward_left",
-        "translation_backward_right",
-        "translation_right",
-        "stopped"]
-      rotation:
-        points: "[[0.28, 0.22], [0.28, -0.22], [-0.28, -0.22], [-0.28, 0.22]]"
-        linear_min: 0.0
-        linear_max: 0.05
-        theta_min: -1.0
-        theta_max: 1.0
-      translation_forward:
-        points: "[[0.40, 0.20], [0.40, -0.20], [-0.22, -0.20], [-0.22, 0.20]]"
-        linear_min: 0.05
-        linear_max: 0.60
-        theta_min: -1.0
-        theta_max: 1.0
-        direction_start_angle: -0.785398
-        direction_end_angle: 0.785398
-      translation_left:
-        points: "[[0.24, 0.30], [0.24, -0.18], [-0.24, -0.18], [-0.24, 0.30]]"
-        linear_min: 0.05
-        linear_max: 0.60
-        theta_min: -1.0
-        theta_max: 1.0
-        direction_start_angle: 0.785398
-        direction_end_angle: 2.356194
-      translation_backward_left:
-        points: "[[0.22, 0.20], [0.22, -0.20], [-0.40, -0.20], [-0.40, 0.20]]"
-        linear_min: 0.05
-        linear_max: 0.60
-        theta_min: -1.0
-        theta_max: 1.0
-        direction_start_angle: 2.356194
-        direction_end_angle: 3.141593
-      translation_backward_right:
-        points: "[[0.22, 0.20], [0.22, -0.20], [-0.40, -0.20], [-0.40, 0.20]]"
-        linear_min: 0.05
-        linear_max: 0.60
-        theta_min: -1.0
-        theta_max: 1.0
-        direction_start_angle: -3.141593
-        direction_end_angle: -2.356194
-      translation_right:
-        points: "[[0.24, 0.18], [0.24, -0.30], [-0.24, -0.30], [-0.24, 0.18]]"
-        linear_min: 0.05
-        linear_max: 0.60
-        theta_min: -1.0
-        theta_max: 1.0
-        direction_start_angle: -2.356194
-        direction_end_angle: -0.785398
-      stopped:
-        points: "[[0.30, 0.22], [0.30, -0.22], [-0.30, -0.22], [-0.30, 0.22]]"
-        linear_min: 0.0
-        linear_max: 1.0
-        theta_min: -1.0
-        theta_max: 1.0
-
     FootprintApproach:
+      # approach 模式不会立刻硬停，而是按与障碍物的预计碰撞时间提前减速。
       type: "polygon"
       action_type: "approach"
       footprint_topic: "/local_costmap/published_footprint"
@@ -413,7 +312,8 @@ collision_monitor:
     observation_sources: ["scan"]
 
     scan:
-      source_timeout: 0.20
+      # collision_monitor 也单独订阅 /scan，和 costmap 不是一回事。
+      source_timeout: 1.00
       type: "scan"
       topic: "/scan"
       enabled: true
@@ -421,17 +321,21 @@ collision_monitor:
 global_costmap:
   global_costmap:
     ros__parameters:
+      # 全局代价地图给 planner_server 用，决定“全局路径看起来怎么绕”。
+      # 刷新频率和膨胀半径。
       use_sim_time: False
-      update_frequency: 2.0
-      publish_frequency: 2.0
+      update_frequency: 1.0
+      publish_frequency: 1.0
       always_send_full_costmap: True
       global_frame: map
       robot_base_frame: base_footprint
-      # 直接使用 v0_1 base_link 碰撞盒在 base_footprint 平面的投影。
-      footprint: "[[0.24, 0.17], [0.24, -0.17], [-0.24, -0.17], [-0.24, 0.17]]"
-      footprint_padding: 0.01
+      # 使用实车最外轮廓 65 x 36 cm 的矩形包络。
+      # footprint 比 robot_radius 更真实，适合非圆形底盘。
+      footprint: "[[0.325, 0.18], [0.325, -0.18], [-0.325, -0.18], [-0.325, 0.18]]"
+      # footprint_padding 用于在碰撞盒外再加一圈安全裕量。
+      footprint_padding: 0.02
       resolution: 0.05
-      track_unknown_space: false
+      track_unknown_space: true
       transform_tolerance: 0.30
       plugins: ["static_layer", "obstacle_layer", "inflation_layer"]
 
@@ -446,12 +350,17 @@ global_costmap:
         footprint_clearing_enabled: True
         observation_sources: scan
         scan:
+          # obstacle_max_range 是“把障碍写进地图”的最远距离；
+          # raytrace_max_range 是“清除障碍”的最远距离。
+          # 这两个值过大时，远处障碍会更早影响全局绕行。
           topic: /scan
           max_obstacle_height: 2.0
           clearing: True
           marking: True
           data_type: "LaserScan"
           inf_is_valid: True
+          # observation_persistence 表示障碍保留多久。
+          # 数值越大，短暂误检更不容易立刻消失，但地图也更“黏”。
           observation_persistence: 0.3
           obstacle_min_range: 0.0
           obstacle_max_range: 3.5
@@ -460,24 +369,29 @@ global_costmap:
 
       inflation_layer:
         plugin: "nav2_costmap_2d::InflationLayer"
+        # 全局膨胀半径稍大一些，绕障余量。
         cost_scaling_factor: 4.0
-        inflation_radius: 0.60
+        inflation_radius: 0.80
 
 local_costmap:
   local_costmap:
     ros__parameters:
+      # 局部代价地图给 controller_server 用，直接决定局部避障和“会不会卡住不动”。
+      # 更小的窗口和更低刷新率，减少“看得太远过早保守”。
       use_sim_time: False
-      update_frequency: 15.0
-      publish_frequency: 8.0
+      update_frequency: 5.0
+      publish_frequency: 2.0
       always_send_full_costmap: True
       global_frame: odom
       robot_base_frame: base_footprint
       rolling_window: true
-      width: 5
-      height: 5
+      # width / height 是局部窗口大小。这里保持 3m，但参数类型必须是整数，否则 local_costmap 启动会崩。
+      width: 3
+      height: 3
       resolution: 0.05
-      footprint: "[[0.24, 0.17], [0.24, -0.17], [-0.24, -0.17], [-0.24, 0.17]]"
-      footprint_padding: 0.01
+      # 局部代价地图必须和全局代价地图使用同一套真实车体外轮廓。
+      footprint: "[[0.325, 0.18], [0.325, -0.18], [-0.325, -0.18], [-0.325, 0.18]]"
+      footprint_padding: 0.02
       transform_tolerance: 0.15
       plugins: ["obstacle_layer", "inflation_layer"]
 
@@ -487,19 +401,24 @@ local_costmap:
         footprint_clearing_enabled: True
         observation_sources: scan
         scan:
+          # 局部地图里的障碍距离和保留时间，比全局地图更直接影响“局部控制是否敢走”。
+          # 这里过远、过大时，控制器会显得保守，甚至出现还有空间但不动。
+          # 缩短局部感知距离，让“临近目标点但两侧有物体”的场景更容易继续收敛。
           topic: /scan
           max_obstacle_height: 2.0
           clearing: True
           marking: True
           data_type: "LaserScan"
           inf_is_valid: True
-          observation_persistence: 0.2
+          # 去掉局部障碍残留，避免 RViz 中“实物已离开但代价还挂着”的假障碍。
+          observation_persistence: 0.0
           obstacle_min_range: 0.0
-          obstacle_max_range: 3.0
+          obstacle_max_range: 1.5
           raytrace_min_range: 0.0
-          raytrace_max_range: 4.0
+          raytrace_max_range: 2.0
 
       inflation_layer:
         plugin: "nav2_costmap_2d::InflationLayer"
-        cost_scaling_factor: 4.0
-        inflation_radius: 0.60
+        # 进一步缩小局部膨胀并提高衰减，让障碍代价不要在整块窗口里铺得太厚。
+        cost_scaling_factor: 6.0
+        inflation_radius: 0.35
