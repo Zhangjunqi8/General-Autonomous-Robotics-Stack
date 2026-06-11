@@ -24,7 +24,6 @@ def _launch_setup(context, *args, **kwargs):
     robot_version = LaunchConfiguration('robot_version').perform(context)
     params_file = LaunchConfiguration('params_file').perform(context)
     resolved_params_file = params_file or str(_default_params_path(robot_version))
-    odom_input_topic = '/odom'
 
     return [
         Node(
@@ -36,7 +35,7 @@ def _launch_setup(context, *args, **kwargs):
                 resolved_params_file,
                 {
                     'use_sim_time': LaunchConfiguration('use_sim_time'),
-                    'odom0': odom_input_topic,
+                    'odom0': '/odom',
                 },
             ],
         )
@@ -44,10 +43,8 @@ def _launch_setup(context, *args, **kwargs):
 
 
 def generate_launch_description():
-    """Generate the HanMole EKF launch description."""
     return LaunchDescription([
         DeclareLaunchArgument('robot_version', default_value='v0_2'),
-        DeclareLaunchArgument('base_controller_name', default_value='base_controller'),
         DeclareLaunchArgument('params_file', default_value=''),
         DeclareLaunchArgument('use_sim_time', default_value='false'),
         OpaqueFunction(function=_launch_setup),

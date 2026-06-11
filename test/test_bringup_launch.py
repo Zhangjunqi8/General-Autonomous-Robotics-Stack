@@ -4,8 +4,6 @@ import importlib.util
 from pathlib import Path
 
 from launch import LaunchContext
-from launch.actions import IncludeLaunchDescription
-from launch.utilities import perform_substitutions
 from launch_ros.actions import Node
 
 
@@ -26,30 +24,27 @@ def _node_parameters_text(node: Node) -> str:
     return str(_node_private_value(node, '_Node__parameters'))
 
 
-def _launch_argument_value(context: LaunchContext, value) -> str:
-    if isinstance(value, str):
-        return value
-    return perform_substitutions(context, list(value))
-
-
-def _expanded_node_parameter_map(node: Node, context: LaunchContext) -> dict[str, str]:
-    parameters = _node_private_value(node, '_Node__parameters')
-    expanded = {}
-    for parameter_dict in parameters:
-        for key, value in parameter_dict.items():
-            expanded[perform_substitutions(context, list(key))] = perform_substitutions(
-                context, list(value)
-            )
-    return expanded
-
-
 def test_navigation_public_bringup_exists():
     bringup = Path(__file__).resolve().parents[1] / 'launch' / 'bringup.launch.py'
     assert bringup.exists()
 
 
+def test_navigation_launch_directory_only_keeps_three_entrypoints():
+    launch_dir = Path(__file__).resolve().parents[1] / 'launch'
+    launch_files = sorted(path.name for path in launch_dir.glob('*.py'))
+
+    assert launch_files == [
+        'bringup.launch.py',
+        'localization_launch.py',
+        'navigation_launch.py',
+    ]
+
+
 def test_v0_1_state_estimator_path_does_not_relay_mecanum_tf():
-    module = _load_launch_module('launch/nav_bringup.launch.py', 'hanmole_navigation_nav_bringup')
+    module = _load_launch_module(
+        'launch/navigation_launch.py',
+        'hanmole_navigation_navigation_launch',
+    )
 
     context = LaunchContext()
     context.launch_configurations.update({
@@ -80,8 +75,8 @@ def test_v0_1_state_estimator_path_does_not_relay_mecanum_tf():
 
 def test_v0_1_state_estimator_path_does_not_launch_cmd_vel_adapter():
     module = _load_launch_module(
-        'launch/nav_bringup.launch.py',
-        'hanmole_navigation_nav_bringup_cmd_vel',
+        'launch/navigation_launch.py',
+        'hanmole_navigation_navigation_launch_cmd_vel',
     )
 
     context = LaunchContext()
@@ -113,8 +108,8 @@ def test_v0_1_state_estimator_path_does_not_launch_cmd_vel_adapter():
 
 def test_v0_1_localization_requires_non_empty_map_argument():
     module = _load_launch_module(
-        'launch/nav_bringup.launch.py',
-        'hanmole_navigation_nav_bringup_requires_map',
+        'launch/navigation_launch.py',
+        'hanmole_navigation_navigation_launch_requires_map',
     )
 
     context = LaunchContext()
@@ -145,13 +140,37 @@ def test_public_bringup_switches_to_ekf_odom_mode_by_default():
     source = bringup_path.read_text(encoding='utf-8')
 
     assert "DeclareLaunchArgument('nav_mode', default_value='ekf_odom')" in source
-    assert "'wheel_odom_navigator.py'" in source
-    assert '" == "wheel_odom"' in source
+    assert "localization_launch.py" in source
+    assert "navigation_launch.py" in source
     assert '" == "ekf_odom"' in source
+    assert '" == "wheel_odom"' in source
+
+
+def test_public_bringup_only_starts_ekf_for_ekf_odom():
+    bringup_path = Path(__file__).resolve().parents[1] / 'launch' / 'bringup.launch.py'
+    source = bringup_path.read_text(encoding='utf-8')
+
+    assert "condition=IfCondition(ekf_odom_mode)" in source
+
+
+def test_navigation_launch_turns_off_nav2_lifecycle_autostart():
+    source = (
+        Path(__file__).resolve().parents[1] / 'launch' / 'navigation_launch.py'
+    ).read_text(encoding='utf-8')
+
+    assert "'autostart': False" in source
+
+
+def test_navigation_launch_passes_nav_mode_to_gateway_node():
+    source = (
+        Path(__file__).resolve().parents[1] / 'launch' / 'navigation_launch.py'
+    ).read_text(encoding='utf-8')
+
+    assert "'nav_mode': LaunchConfiguration('nav_mode')" in source
 
 
 def test_nav2_bringup_enables_velocity_smoother_and_collision_monitor():
-    bringup_path = Path(__file__).resolve().parents[1] / 'launch' / 'nav_bringup.launch.py'
+    bringup_path = Path(__file__).resolve().parents[1] / 'launch' / 'navigation_launch.py'
     source = bringup_path.read_text(encoding='utf-8')
 
     assert "package='nav2_velocity_smoother'" in source
@@ -168,11 +187,20 @@ def test_public_bringup_no_longer_declares_cmd_vel_adapter_toggle():
     assert 'use_nav2' not in source
 
 
-def test_public_bringup_starts_wheel_odom_navigator_node():
+def test_public_bringup_no_longer_references_legacy_launch_files():
     bringup_path = Path(__file__).resolve().parents[1] / 'launch' / 'bringup.launch.py'
     source = bringup_path.read_text(encoding='utf-8')
 
-    assert "package='hanmole_navigation'" in source
-    assert "executable='wheel_odom_navigator.py'" in source
-    assert "'odom_topic': '/odom'" in source
-    assert "'action_name': 'navigate_to_pose'" in source
+    assert 'ekf.launch.py' not in source
+    assert 'nav_bringup.launch.py' not in source
+    assert 'ekf_target_navigation.launch.py' not in source
+    assert 'route_navigation.launch.py' not in source
+    assert 'rviz.launch.py' not in source
+
+
+def test_navigation_launch_starts_gateway_and_catalog_nodes():
+    bringup_path = Path(__file__).resolve().parents[1] / 'launch' / 'navigation_launch.py'
+    source = bringup_path.read_text(encoding='utf-8')
+
+    assert "executable='nav2_target_gateway_node'" in source
+    assert "executable='target_catalog_publisher_node'" in source
