@@ -22,16 +22,18 @@ nav2_target_gateway:
     startup_delay_ms: 3000
     input_freshness_timeout_ms: 500
     startup_poll_period_ms: 5
-    tf_freshness_threshold_ms: 2
+    tf_freshness_threshold_ms: 500
     lifecycle_request_timeout_ms: 12000
     stable_tf_success_count: 3
     navigate_action_name: "/navigate_to_pose"
     navigate_service_name: "/hanmole/agv/navigate_to_pose"
     cancel_service_name: "/hanmole/agv/navigate_cancel"
-    set_initial_pose_service_name: "/hanmole/agv/set_initial_pose"
+    set_initial_pose_service_name: "/hanmole/agv/navigate_set_initial_pose"
     nav_status_topic: "/nav_status"
     target_state_topic: "/hanmole_navigation/target_state"
     initial_pose_topic: "/initialpose"
+    goal_pose_topic: "/goal_pose"
+    scan_follower_cancel_service: "/scan_follower/cancel"
     action_timeout_ms: 3000
 
 target_catalog_publisher:

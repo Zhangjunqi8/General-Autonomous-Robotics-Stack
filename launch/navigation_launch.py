@@ -40,19 +40,6 @@ def _navigation_remappings() -> list[tuple[str, str]]:
     return [('/tf', 'tf'), ('/tf_static', 'tf_static')]
 
 
-def _navigation_lifecycle_nodes() -> list[str]:
-    return [
-        'controller_server',
-        'smoother_server',
-        'planner_server',
-        'behavior_server',
-        'velocity_smoother',
-        'collision_monitor',
-        'bt_navigator',
-        'waypoint_follower',
-    ]
-
-
 def _build_configured_nav2_params(
     params_file,
     namespace,
@@ -85,115 +72,112 @@ def _build_configured_nav2_params(
     )
 
 
-def _create_navigation_node_actions(configured_params, use_sim_time, use_respawn, log_level):
-    remappings = _navigation_remappings()
-    lifecycle_node_names = _navigation_lifecycle_nodes()
-    controller_action = Node(
-        package='nav2_controller',
-        executable='controller_server',
-        output='screen',
-        respawn=use_respawn,
-        respawn_delay=2.0,
-        parameters=[configured_params],
-        arguments=['--ros-args', '--log-level', log_level],
-        remappings=remappings + [('cmd_vel', 'cmd_vel_nav')],
-    )
-    return GroupAction(
-        condition=UnlessCondition(LaunchConfiguration('use_composition')),
-        actions=[
-            SetParameter('use_sim_time', use_sim_time),
-            controller_action,
-            Node(
-                package='nav2_smoother',
-                executable='smoother_server',
-                name='smoother_server',
-                output='screen',
-                respawn=use_respawn,
-                respawn_delay=2.0,
-                parameters=[configured_params],
-                arguments=['--ros-args', '--log-level', log_level],
-                remappings=remappings,
-            ),
-            Node(
-                package='nav2_planner',
-                executable='planner_server',
-                name='planner_server',
-                output='screen',
-                respawn=use_respawn,
-                respawn_delay=2.0,
-                parameters=[configured_params],
-                arguments=['--ros-args', '--log-level', log_level],
-                remappings=remappings,
-            ),
-            Node(
-                package='nav2_behaviors',
-                executable='behavior_server',
-                name='behavior_server',
-                output='screen',
-                respawn=use_respawn,
-                respawn_delay=2.0,
-                parameters=[configured_params],
-                arguments=['--ros-args', '--log-level', log_level],
-                remappings=remappings + [('cmd_vel', 'cmd_vel_nav')],
-            ),
-            Node(
-                package='nav2_bt_navigator',
-                executable='bt_navigator',
-                name='bt_navigator',
-                output='screen',
-                respawn=use_respawn,
-                respawn_delay=2.0,
-                parameters=[configured_params],
-                arguments=['--ros-args', '--log-level', log_level],
-                remappings=remappings,
-            ),
-            Node(
-                package='nav2_waypoint_follower',
-                executable='waypoint_follower',
-                name='waypoint_follower',
-                output='screen',
-                respawn=use_respawn,
-                respawn_delay=2.0,
-                parameters=[configured_params],
-                arguments=['--ros-args', '--log-level', log_level],
-                remappings=remappings,
-            ),
-            Node(
-                package='nav2_velocity_smoother',
-                executable='velocity_smoother',
-                name='velocity_smoother',
-                output='screen',
-                respawn=use_respawn,
-                respawn_delay=2.0,
-                parameters=[configured_params],
-                arguments=['--ros-args', '--log-level', log_level],
-                remappings=remappings + [('cmd_vel', 'cmd_vel_nav')],
-            ),
-            Node(
-                package='nav2_collision_monitor',
-                executable='collision_monitor',
-                name='collision_monitor',
-                output='screen',
-                respawn=use_respawn,
-                respawn_delay=2.0,
-                parameters=[configured_params],
-                arguments=['--ros-args', '--log-level', log_level],
-                remappings=remappings,
-            ),
-            Node(
-                package='nav2_lifecycle_manager',
-                executable='lifecycle_manager',
-                name='lifecycle_manager_navigation',
-                output='screen',
-                arguments=['--ros-args', '--log-level', log_level],
-                parameters=[
-                    {'autostart': False},
-                    {'node_names': lifecycle_node_names},
-                ],
-            ),
-        ],
-    )
+def _navigation_lifecycle_nodes(
+    use_nav2_controller: bool = False,
+    use_smoother_server: bool = False,
+    use_behavior_server: bool = False,
+    use_velocity_smoother: bool = False,
+    use_collision_monitor: bool = False,
+    use_bt_navigator: bool = False,
+    use_waypoint_follower: bool = False,
+) -> list[str]:
+    nodes = ['planner_server']
+    if use_nav2_controller:
+        nodes.append('controller_server')
+    if use_smoother_server:
+        nodes.append('smoother_server')
+    if use_behavior_server:
+        nodes.append('behavior_server')
+    if use_velocity_smoother:
+        nodes.append('velocity_smoother')
+    if use_collision_monitor:
+        nodes.append('collision_monitor')
+    if use_bt_navigator:
+        nodes.append('bt_navigator')
+    if use_waypoint_follower:
+        nodes.append('waypoint_follower')
+    return nodes
 
+def _create_navigation_node_actions(
+    configured_params,
+    use_sim_time,
+    use_respawn,
+    log_level,
+    use_nav2_controller,
+    use_smoother_server,
+    use_behavior_server,
+    use_velocity_smoother,
+    use_collision_monitor,
+    use_bt_navigator,
+    use_waypoint_follower,
+):
+    remappings = _navigation_remappings()
+    lifecycle_node_names = _navigation_lifecycle_nodes(
+        use_nav2_controller=use_nav2_controller,
+        use_smoother_server=use_smoother_server,
+        use_behavior_server=use_behavior_server,
+        use_velocity_smoother=use_velocity_smoother,
+        use_collision_monitor=use_collision_monitor,
+        use_bt_navigator=use_bt_navigator,
+        use_waypoint_follower=use_waypoint_follower,
+    )
+    actions = [SetParameter('use_sim_time', use_sim_time)]
+    if use_nav2_controller:
+        actions.append(Node(
+            package='nav2_controller', executable='controller_server', output='screen',
+            respawn=use_respawn, respawn_delay=2.0, parameters=[configured_params],
+            arguments=['--ros-args', '--log-level', log_level],
+            remappings=remappings + [('cmd_vel', 'cmd_vel_nav')],
+        ))
+    if use_smoother_server:
+        actions.append(Node(
+            package='nav2_smoother', executable='smoother_server', name='smoother_server', output='screen',
+            respawn=use_respawn, respawn_delay=2.0, parameters=[configured_params],
+            arguments=['--ros-args', '--log-level', log_level], remappings=remappings,
+        ))
+    actions.append(Node(
+        package='nav2_planner', executable='planner_server', name='planner_server', output='screen',
+        respawn=use_respawn, respawn_delay=2.0, parameters=[configured_params],
+        arguments=['--ros-args', '--log-level', log_level], remappings=remappings,
+    ))
+    if use_behavior_server:
+        actions.append(Node(
+            package='nav2_behaviors', executable='behavior_server', name='behavior_server', output='screen',
+            respawn=use_respawn, respawn_delay=2.0, parameters=[configured_params],
+            arguments=['--ros-args', '--log-level', log_level],
+            remappings=remappings + [('cmd_vel', 'cmd_vel_nav')],
+        ))
+    if use_bt_navigator:
+        actions.append(Node(
+            package='nav2_bt_navigator', executable='bt_navigator', name='bt_navigator', output='screen',
+            respawn=use_respawn, respawn_delay=2.0, parameters=[configured_params],
+            arguments=['--ros-args', '--log-level', log_level], remappings=remappings,
+        ))
+    if use_waypoint_follower:
+        actions.append(Node(
+            package='nav2_waypoint_follower', executable='waypoint_follower', name='waypoint_follower', output='screen',
+            respawn=use_respawn, respawn_delay=2.0, parameters=[configured_params],
+            arguments=['--ros-args', '--log-level', log_level], remappings=remappings,
+        ))
+    if use_velocity_smoother:
+        actions.append(Node(
+            package='nav2_velocity_smoother', executable='velocity_smoother', name='velocity_smoother', output='screen',
+            respawn=use_respawn, respawn_delay=2.0, parameters=[configured_params],
+            arguments=['--ros-args', '--log-level', log_level],
+            remappings=remappings + [('cmd_vel', 'cmd_vel_nav')],
+        ))
+    if use_collision_monitor:
+        actions.append(Node(
+            package='nav2_collision_monitor', executable='collision_monitor', name='collision_monitor', output='screen',
+            respawn=use_respawn, respawn_delay=2.0, parameters=[configured_params],
+            arguments=['--ros-args', '--log-level', log_level], remappings=remappings,
+        ))
+    actions.append(Node(
+        package='nav2_lifecycle_manager', executable='lifecycle_manager', name='lifecycle_manager_navigation',
+        output='screen', arguments=['--ros-args', '--log-level', log_level],
+        parameters=[{'autostart': False}, {'node_names': lifecycle_node_names}],
+    ))
+    return GroupAction(condition=UnlessCondition(LaunchConfiguration('use_composition')), actions=actions)
 
 def _create_navigation_composable_actions(
     configured_params,
@@ -201,77 +185,68 @@ def _create_navigation_composable_actions(
     container_name,
     use_sim_time,
     log_level,
+    use_nav2_controller,
+    use_smoother_server,
+    use_behavior_server,
+    use_velocity_smoother,
+    use_collision_monitor,
+    use_bt_navigator,
+    use_waypoint_follower,
 ):
     remappings = _navigation_remappings()
-    composable_nodes = [
-        ComposableNode(
-            package='nav2_controller',
-            plugin='nav2_controller::ControllerServer',
-            name='controller_server',
-            parameters=[configured_params],
-            remappings=remappings + [('cmd_vel', 'cmd_vel_nav')],
-        ),
-        ComposableNode(
-            package='nav2_smoother',
-            plugin='nav2_smoother::SmootherServer',
-            name='smoother_server',
-            parameters=[configured_params],
-            remappings=remappings,
-        ),
-        ComposableNode(
-            package='nav2_planner',
-            plugin='nav2_planner::PlannerServer',
-            name='planner_server',
-            parameters=[configured_params],
-            remappings=remappings,
-        ),
-        ComposableNode(
-            package='nav2_behaviors',
-            plugin='behavior_server::BehaviorServer',
-            name='behavior_server',
-            parameters=[configured_params],
-            remappings=remappings + [('cmd_vel', 'cmd_vel_nav')],
-        ),
-        ComposableNode(
-            package='nav2_bt_navigator',
-            plugin='nav2_bt_navigator::BtNavigator',
-            name='bt_navigator',
-            parameters=[configured_params],
-            remappings=remappings,
-        ),
-        ComposableNode(
-            package='nav2_waypoint_follower',
-            plugin='nav2_waypoint_follower::WaypointFollower',
-            name='waypoint_follower',
-            parameters=[configured_params],
-            remappings=remappings,
-        ),
-        ComposableNode(
-            package='nav2_velocity_smoother',
-            plugin='nav2_velocity_smoother::VelocitySmoother',
-            name='velocity_smoother',
-            parameters=[configured_params],
-            remappings=remappings + [('cmd_vel', 'cmd_vel_nav')],
-        ),
-        ComposableNode(
-            package='nav2_collision_monitor',
-            plugin='nav2_collision_monitor::CollisionMonitor',
-            name='collision_monitor',
-            parameters=[configured_params],
-            remappings=remappings,
-        ),
-            ComposableNode(
-                package='nav2_lifecycle_manager',
-                plugin='nav2_lifecycle_manager::LifecycleManager',
-                name='lifecycle_manager_navigation',
-                parameters=[
-                    {
-                        'autostart': False,
-                        'node_names': _navigation_lifecycle_nodes(),
-                    }
-                ],
-            ),
-    ]
+    lifecycle_node_names = _navigation_lifecycle_nodes(
+        use_nav2_controller=use_nav2_controller,
+        use_smoother_server=use_smoother_server,
+        use_behavior_server=use_behavior_server,
+        use_velocity_smoother=use_velocity_smoother,
+        use_collision_monitor=use_collision_monitor,
+        use_bt_navigator=use_bt_navigator,
+        use_waypoint_follower=use_waypoint_follower,
+    )
+    composable_nodes = []
+    if use_nav2_controller:
+        composable_nodes.append(ComposableNode(
+            package='nav2_controller', plugin='nav2_controller::ControllerServer', name='controller_server',
+            parameters=[configured_params], remappings=remappings + [('cmd_vel', 'cmd_vel_nav')],
+        ))
+    if use_smoother_server:
+        composable_nodes.append(ComposableNode(
+            package='nav2_smoother', plugin='nav2_smoother::SmootherServer', name='smoother_server',
+            parameters=[configured_params], remappings=remappings,
+        ))
+    composable_nodes.append(ComposableNode(
+        package='nav2_planner', plugin='nav2_planner::PlannerServer', name='planner_server',
+        parameters=[configured_params], remappings=remappings,
+    ))
+    if use_behavior_server:
+        composable_nodes.append(ComposableNode(
+            package='nav2_behaviors', plugin='behavior_server::BehaviorServer', name='behavior_server',
+            parameters=[configured_params], remappings=remappings + [('cmd_vel', 'cmd_vel_nav')],
+        ))
+    if use_bt_navigator:
+        composable_nodes.append(ComposableNode(
+            package='nav2_bt_navigator', plugin='nav2_bt_navigator::BtNavigator', name='bt_navigator',
+            parameters=[configured_params], remappings=remappings,
+        ))
+    if use_waypoint_follower:
+        composable_nodes.append(ComposableNode(
+            package='nav2_waypoint_follower', plugin='nav2_waypoint_follower::WaypointFollower', name='waypoint_follower',
+            parameters=[configured_params], remappings=remappings,
+        ))
+    if use_velocity_smoother:
+        composable_nodes.append(ComposableNode(
+            package='nav2_velocity_smoother', plugin='nav2_velocity_smoother::VelocitySmoother', name='velocity_smoother',
+            parameters=[configured_params], remappings=remappings + [('cmd_vel', 'cmd_vel_nav')],
+        ))
+    if use_collision_monitor:
+        composable_nodes.append(ComposableNode(
+            package='nav2_collision_monitor', plugin='nav2_collision_monitor::CollisionMonitor', name='collision_monitor',
+            parameters=[configured_params], remappings=remappings,
+        ))
+    composable_nodes.append(ComposableNode(
+        package='nav2_lifecycle_manager', plugin='nav2_lifecycle_manager::LifecycleManager', name='lifecycle_manager_navigation',
+        parameters=[{'autostart': False, 'node_names': lifecycle_node_names}],
+    ))
     return GroupAction(
         condition=IfCondition(LaunchConfiguration('use_composition')),
         actions=[
@@ -282,7 +257,6 @@ def _create_navigation_composable_actions(
             ),
         ],
     )
-
 
 def _launch_setup(context, *args, **kwargs):
     del args, kwargs
@@ -311,6 +285,13 @@ def _launch_setup(context, *args, **kwargs):
     use_composition_value = context.launch_configurations.get('use_composition', 'True')
     container_name_value = context.launch_configurations.get('container_name', 'nav2_container')
     nav_mode_value = context.launch_configurations.get('nav_mode', 'ekf_odom')
+    use_nav2_controller = _as_bool(context.launch_configurations.get('use_nav2_controller', 'false'))
+    use_smoother_server = _as_bool(context.launch_configurations.get('use_smoother_server', 'false'))
+    use_behavior_server = _as_bool(context.launch_configurations.get('use_behavior_server', 'false'))
+    use_velocity_smoother = _as_bool(context.launch_configurations.get('use_velocity_smoother', 'false'))
+    use_collision_monitor = _as_bool(context.launch_configurations.get('use_collision_monitor', 'false'))
+    use_bt_navigator = _as_bool(context.launch_configurations.get('use_bt_navigator', 'false'))
+    use_waypoint_follower = _as_bool(context.launch_configurations.get('use_waypoint_follower', 'false'))
     odom_topic = '/odometry/filtered' if nav_mode_value == 'ekf_odom' else '/odom'
     configured_params = _build_configured_nav2_params(
         nav2_params,
@@ -372,13 +353,32 @@ def _launch_setup(context, *args, **kwargs):
                         'container_name': container_name_value,
                     }.items(),
                 ),
-                _create_navigation_node_actions(configured_params, use_sim_time, use_respawn, log_level),
+                _create_navigation_node_actions(
+                    configured_params,
+                    use_sim_time,
+                    use_respawn,
+                    log_level,
+                    use_nav2_controller,
+                    use_smoother_server,
+                    use_behavior_server,
+                    use_velocity_smoother,
+                    use_collision_monitor,
+                    use_bt_navigator,
+                    use_waypoint_follower,
+                ),
                 _create_navigation_composable_actions(
                     configured_params,
                     namespace,
                     container_name,
                     use_sim_time,
                     log_level,
+                    use_nav2_controller,
+                    use_smoother_server,
+                    use_behavior_server,
+                    use_velocity_smoother,
+                    use_collision_monitor,
+                    use_bt_navigator,
+                    use_waypoint_follower,
                 ),
                 Node(
                     package='hanmole_navigation',
@@ -425,5 +425,12 @@ def generate_launch_description():
         DeclareLaunchArgument('use_respawn', default_value='False'),
         DeclareLaunchArgument('log_level', default_value='info'),
         DeclareLaunchArgument('container_name', default_value='nav2_container'),
+        DeclareLaunchArgument('use_nav2_controller', default_value='false'),
+        DeclareLaunchArgument('use_smoother_server', default_value='false'),
+        DeclareLaunchArgument('use_behavior_server', default_value='false'),
+        DeclareLaunchArgument('use_velocity_smoother', default_value='false'),
+        DeclareLaunchArgument('use_collision_monitor', default_value='false'),
+        DeclareLaunchArgument('use_bt_navigator', default_value='false'),
+        DeclareLaunchArgument('use_waypoint_follower', default_value='false'),
         OpaqueFunction(function=_launch_setup),
     ])

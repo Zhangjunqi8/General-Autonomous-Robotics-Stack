@@ -8,6 +8,7 @@
 #include <string>
 #include <utility>
 
+#include "geometry_msgs/msg/pose_stamped.hpp"
 #include "geometry_msgs/msg/pose_with_covariance_stamped.hpp"
 #include "hanmole_msgs/srv/set_string.hpp"
 #include "hanmole_navigation/target_repository.hpp"
@@ -150,7 +151,10 @@ public:
     cancel_service_name_ = declare_parameter<std::string>(
       "cancel_service_name", "/hanmole/agv/navigate_cancel");
     set_initial_pose_service_name_ = declare_parameter<std::string>(
-      "set_initial_pose_service_name", "/hanmole/agv/set_initial_pose");
+      "set_initial_pose_service_name", "/hanmole/agv/navigate_set_initial_pose");
+    goal_pose_topic_ = declare_parameter<std::string>("goal_pose_topic", "/goal_pose");
+    scan_follower_cancel_service_ = declare_parameter<std::string>(
+      "scan_follower_cancel_service", "/scan_follower/cancel");
     nav_status_topic_ = declare_parameter<std::string>("nav_status_topic", "/nav_status");
     target_state_topic_ = declare_parameter<std::string>(
       "target_state_topic", "/hanmole_navigation/target_state");
@@ -238,6 +242,11 @@ public:
     initial_pose_publisher_ = create_publisher<geometry_msgs::msg::PoseWithCovarianceStamped>(
       initial_pose_topic_,
       rclcpp::QoS(1).transient_local().reliable());
+    goal_pose_publisher_ = create_publisher<geometry_msgs::msg::PoseStamped>(goal_pose_topic_, 10);
+    scan_follower_cancel_client_ = create_client<Trigger>(
+      scan_follower_cancel_service_,
+      rclcpp::ServicesQoS(),
+      callback_group_);
 
     rclcpp::SubscriptionOptions subscription_options;
     subscription_options.callback_group = callback_group_;
@@ -342,11 +351,6 @@ private:
         return;
       }
       current_pose_xy = current_pose_xy_;
-      if (active_goal_handle_) {
-        response->success = false;
-        response->result = "navigation already active";
-        return;
-      }
     }
 
     const auto target_pose = repository_.resolve_target(target_group_, request->data, current_pose_xy);
@@ -374,45 +378,17 @@ private:
     }
 
     publish_state("waiting_for_nav2", request->data);
-    if (!action_client_->wait_for_action_server(action_wait_timeout_)) {
-      publish_state("failed", "idle");
-      response->success = false;
-      response->result = "navigate_to_pose action server is unavailable";
-      return;
-    }
 
-    NavigateToPose::Goal goal;
-    goal.pose.header.stamp = now();
-    goal.pose.header.frame_id = repository_.frame();
-    goal.pose.pose.position.x = target_pose->x;
-    goal.pose.pose.position.y = target_pose->y;
-    goal.pose.pose.orientation = quaternion_from_yaw(target_pose->yaw);
-
-    auto options = typename rclcpp_action::Client<NavigateToPose>::SendGoalOptions();
-    options.result_callback =
-      [this, target_name = request->data](const GoalHandleNavigateToPose::WrappedResult & result) {
-        handle_result(target_name, result);
-      };
-
-    auto future = action_client_->async_send_goal(goal, options);
-    if (future.wait_for(action_wait_timeout_) != std::future_status::ready) {
-      publish_state("failed", "idle");
-      response->success = false;
-      response->result = "timed out waiting for goal acceptance";
-      return;
-    }
-
-    auto goal_handle = future.get();
-    if (!goal_handle) {
-      publish_state("failed", "idle");
-      response->success = false;
-      response->result = "goal rejected by action server";
-      return;
-    }
+    geometry_msgs::msg::PoseStamped goal;
+    goal.header.stamp = now();
+    goal.header.frame_id = repository_.frame();
+    goal.pose.position.x = target_pose->x;
+    goal.pose.position.y = target_pose->y;
+    goal.pose.orientation = quaternion_from_yaw(target_pose->yaw);
+    goal_pose_publisher_->publish(goal);
 
     {
       std::lock_guard<std::mutex> lock(state_mutex_);
-      active_goal_handle_ = goal_handle;
       active_target_name_ = request->data;
     }
     publish_state("navigating", request->data);
@@ -423,27 +399,40 @@ private:
 
   void handle_cancel_request(std::shared_ptr<Trigger::Response> response)
   {
-    std::shared_ptr<GoalHandleNavigateToPose> goal_handle;
     std::string active_target_name = "idle";
     {
       std::lock_guard<std::mutex> lock(state_mutex_);
-      goal_handle = active_goal_handle_;
       if (!active_target_name_.empty()) {
         active_target_name = active_target_name_;
       }
     }
 
-    if (!goal_handle) {
-      publish_state("idle", "idle");
-      response->success = true;
-      response->message = "no active navigation goal";
+    publish_state("canceling", active_target_name);
+    if (!scan_follower_cancel_client_->wait_for_service(action_wait_timeout_)) {
+      publish_state("failed", "idle");
+      response->success = false;
+      response->message = "scan follower cancel service is unavailable";
       return;
     }
 
-    action_client_->async_cancel_goal(goal_handle);
-    publish_state("canceling", active_target_name);
-    response->success = true;
-    response->message = "cancel requested";
+    auto request = std::make_shared<Trigger::Request>();
+    auto future = scan_follower_cancel_client_->async_send_request(request);
+    if (future.wait_for(action_wait_timeout_) != std::future_status::ready) {
+      publish_state("failed", "idle");
+      response->success = false;
+      response->message = "timed out waiting for scan follower cancel";
+      return;
+    }
+
+    const auto cancel_response = future.get();
+    {
+      std::lock_guard<std::mutex> lock(state_mutex_);
+      active_goal_handle_.reset();
+      active_target_name_.clear();
+    }
+    publish_state("idle", "idle");
+    response->success = cancel_response->success;
+    response->message = cancel_response->message;
   }
 
   void handle_set_initial_pose_request(std::shared_ptr<Trigger::Response> response)
@@ -668,9 +657,7 @@ private:
 
   bool navigation_nodes_are_active()
   {
-    return lifecycle_node_is_active(planner_server_state_client_) &&
-           lifecycle_node_is_active(controller_server_state_client_) &&
-           lifecycle_node_is_active(bt_navigator_state_client_);
+    return lifecycle_node_is_active(planner_server_state_client_);
   }
 
   bool message_is_fresh(const std::optional<rclcpp::Time> & stamp) const
@@ -771,6 +758,8 @@ private:
   std::string nav_status_topic_;
   std::string target_state_topic_;
   std::string initial_pose_topic_;
+  std::string goal_pose_topic_;
+  std::string scan_follower_cancel_service_;
   std::chrono::milliseconds action_wait_timeout_{3000};
   std::chrono::milliseconds startup_delay_{3000};
   std::chrono::milliseconds input_freshness_timeout_{500};
@@ -813,6 +802,7 @@ private:
   rclcpp::Publisher<std_msgs::msg::String>::SharedPtr nav_status_publisher_;
   rclcpp::Publisher<std_msgs::msg::String>::SharedPtr target_state_publisher_;
   rclcpp::Publisher<geometry_msgs::msg::PoseWithCovarianceStamped>::SharedPtr initial_pose_publisher_;
+  rclcpp::Publisher<geometry_msgs::msg::PoseStamped>::SharedPtr goal_pose_publisher_;
   rclcpp::Subscription<sensor_msgs::msg::LaserScan>::SharedPtr scan_subscription_;
   rclcpp::Subscription<nav_msgs::msg::Odometry>::SharedPtr odom_subscription_;
   rclcpp::Subscription<nav_msgs::msg::OccupancyGrid>::SharedPtr map_subscription_;
@@ -821,6 +811,7 @@ private:
   rclcpp::Service<SetString>::SharedPtr navigate_service_;
   rclcpp::Service<Trigger>::SharedPtr cancel_service_;
   rclcpp::Service<Trigger>::SharedPtr set_initial_pose_service_;
+  rclcpp::Client<Trigger>::SharedPtr scan_follower_cancel_client_;
   rclcpp::TimerBase::SharedPtr startup_timer_;
 };
 

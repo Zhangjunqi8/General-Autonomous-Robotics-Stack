@@ -1,0 +1,24 @@
+behavior_server:
+  ros__parameters:
+    use_sim_time: false
+    enable_stamped_cmd_vel: false
+    local_costmap_topic: /global_costmap/costmap_raw
+    local_footprint_topic: /global_costmap/published_footprint
+    global_costmap_topic: /global_costmap/costmap_raw
+    global_footprint_topic: /global_costmap/published_footprint
+    cycle_frequency: 10.0
+    behavior_plugins: ["backup", "wait"]
+
+    backup:
+      plugin: "nav2_behaviors::BackUp"
+    wait:
+      plugin: "nav2_behaviors::Wait"
+
+    simulate_ahead_time: 0.2
+    max_rotational_vel: 0.60
+    min_rotational_vel: 0.10
+    rotational_acc_lim: 1.00
+    local_frame: odom
+    global_frame: odom
+    robot_base_frame: base_footprint
+    transform_tolerance: 0.5

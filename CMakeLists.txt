@@ -13,7 +13,9 @@ find_package(rclcpp_action REQUIRED)
 find_package(sensor_msgs REQUIRED)
 find_package(std_msgs REQUIRED)
 find_package(std_srvs REQUIRED)
+find_package(tf2 REQUIRED)
 find_package(tf2_ros REQUIRED)
+find_package(tf2_geometry_msgs REQUIRED)
 find_package(yaml-cpp REQUIRED)
 
 add_library(target_repository src/target_repository.cpp)
@@ -44,6 +46,31 @@ target_include_directories(nav2_target_gateway_node PRIVATE include)
 target_link_libraries(nav2_target_gateway_node target_repository)
 ament_target_dependencies(nav2_target_gateway_node ${navigation_node_dependencies})
 
+add_executable(scan_path_follower_node src/scan_path_follower_node.cpp)
+ament_target_dependencies(scan_path_follower_node
+  rclcpp
+  rclcpp_action
+  nav_msgs
+  nav2_msgs
+  sensor_msgs
+  geometry_msgs
+  std_msgs
+  std_srvs
+  tf2
+  tf2_geometry_msgs
+  tf2_ros
+)
+
+add_executable(cmd_vel_safety_filter_node src/cmd_vel_safety_filter_node.cpp)
+ament_target_dependencies(cmd_vel_safety_filter_node
+  rclcpp
+  sensor_msgs
+  geometry_msgs
+  tf2
+  tf2_geometry_msgs
+  tf2_ros
+)
+
 set(navigation_share_dirs
   launch
   config
@@ -70,6 +97,8 @@ install(
     target_repository
     target_catalog_publisher_node
     nav2_target_gateway_node
+    scan_path_follower_node
+    cmd_vel_safety_filter_node
   ARCHIVE DESTINATION lib
   LIBRARY DESTINATION lib
   RUNTIME DESTINATION lib/${PROJECT_NAME}

@@ -1,0 +1,53 @@
+scan_path_follower:
+  ros__parameters:
+    scan_topic: /scan
+    goal_topic: /goal_pose
+    odom_topic: /odometry/filtered
+    cmd_vel_topic: /cmd_vel_raw
+    plan_topic: /scan_follower/plan
+    cancel_service_name: /scan_follower/cancel
+    nav_status_topic: /nav_status
+    target_state_topic: /hanmole_navigation/target_state
+    safety_state_topic: /cmd_vel_safety_filter/state
+    compute_path_action: compute_path_to_pose
+    backup_action: backup
+    wait_action: wait
+    planner_id: GridBased
+    base_frame: base_footprint
+    global_frame: map
+
+    footprint:
+      front: 0.24
+      rear: 0.24
+      left: 0.17
+      right: 0.17
+
+    local_goal_distance: 0.70
+    goal_tolerance: 0.12
+    obstacle_clearance: 0.10
+    prediction_time: 0.80
+    simulation_dt: 0.10
+    control_frequency: 15.0
+    scan_timeout: 0.40
+    replan_period: 2.0
+
+    max_vel_x: 0.25
+    max_vel_y: 0.15
+    max_vel_theta: 0.70
+    min_cmd_speed: 0.04
+    goal_gain_x: 0.75
+    goal_gain_y: 0.75
+    yaw_gain: 0.9
+    heading_weight: 2.0
+    velocity_weight: 0.15
+    obstacle_weight: 0.25
+    allow_strafe: true
+    allow_reverse: true
+    stop_on_stale_scan: true
+    enable_recovery: true
+    blocked_timeout: 2.0
+    max_recovery_attempts: 3
+    backup_distance: 0.15
+    backup_speed: 0.05
+    backup_time_allowance: 8.0
+    recovery_wait_time: 0.5
