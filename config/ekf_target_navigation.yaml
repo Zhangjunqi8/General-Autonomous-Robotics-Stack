@@ -30,6 +30,7 @@ nav2_target_gateway:
     cancel_service_name: "/hanmole/agv/navigate_cancel"
     set_initial_pose_service_name: "/hanmole/agv/set_initial_pose"
     nav_status_topic: "/nav_status"
+    nav_feedback_topic: "/hanmole/agv/nav_feedback"
     target_state_topic: "/hanmole_navigation/target_state"
     initial_pose_topic: "/initialpose"
     action_timeout_ms: 3000

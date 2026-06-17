@@ -66,6 +66,12 @@ install(
 )
 
 install(
+  PROGRAMS
+    scripts/random_target_nav_loop.py
+  DESTINATION lib/${PROJECT_NAME}
+)
+
+install(
   TARGETS
     target_repository
     target_catalog_publisher_node

@@ -1,0 +1,464 @@
+# HanMole v0_1 Nav2 麦克纳姆导航基线配置
+#
+# 设计目标：
+# 1. AMCL 仍按全向底盘建模，避免定位层因为麦克纳姆横移而退化。
+# 2. 但导航控制层收敛为“先转向、再前进/倒车、末端对正”的非横移观感。
+# 3. 全局规划使用 Navfn，局部控制使用 Regulated Pure Pursuit。
+# 4. 速度命令链路固定为 cmd_vel_nav -> cmd_vel_smoothed -> /cmd_vel。
+# 5. collision_monitor 保留基础 stop / approach 保护，不再使用全向 velocity polygons。
+
+amcl:  # 融合激光和里程计，持续输出 map->odom 定位结果。
+  ros__parameters:
+    use_sim_time: False
+    # 数值越大，AMCL 越不相信里程计，越依赖激光匹配；数值太大则定位会更抖。
+    alpha1: 0.20  # 放大后会降低 AMCL 对原地旋转角度的信任。
+    alpha2: 0.20  # 放大后会降低 AMCL 对直行时航向保持的信任。
+    alpha3: 0.15  # 放大后会降低 AMCL 对直行距离的信任。
+    alpha4: 0.15  # 放大后会降低 AMCL 对转向过程中位置漂移的信任。
+    alpha5: 0.10  # 放大后会降低 AMCL 对麦克纳姆横向里程计的信任。
+    # 使用全向底盘运动模型，避免麦克纳姆横移时退化成差速运动假设。
+    robot_model_type: "nav2_amcl::OmniMotionModel"
+    base_frame_id: "base_footprint"
+    beam_skip_distance: 0.5  # 控制多远的激光偏差会被视为离群，越小越容易跳过异常束。
+    beam_skip_error_threshold: 0.9  # 控制异常束占比多高才启用跳束保护。
+    beam_skip_threshold: 0.3  # 限制最多跳过多少激光束，避免定位信息被丢太多。
+    do_beamskip: false
+    global_frame_id: "map"
+    # max_beams / 粒子数越大，定位通常越稳，但 CPU 占用也越高。
+    lambda_short: 0.1  # 控制短读数对激光匹配的影响，通常只在近距离误检多时调整。
+    laser_likelihood_max_dist: 3.0  # 扩大后远离障碍的激光也会参与匹配，定位更宽容但可能变钝。
+    laser_max_range: 20.0  # 限制参与定位的最远激光读数，过滤过远低可信数据。
+    laser_min_range: -1.0
+    laser_model_type: "likelihood_field"
+    max_beams: 100  # 增大可提升匹配稳定性，但会增加 CPU 占用。
+    max_particles: 3000  # 增大可提升全局定位鲁棒性，但会增加计算量。
+    min_particles: 800  # 提高下限可减少定位发散风险，但会增加基础 CPU 占用。
+    odom_frame_id: "odom"
+    pf_err: 0.05  # 减小后粒子估计更精细，但需要更多粒子。
+    pf_z: 0.99  # 提高后定位更保守，通常会保留更多粒子。
+    recovery_alpha_fast: 0.0
+    recovery_alpha_slow: 0.0
+    resample_interval: 1  # 越小越快淘汰低权重粒子，定位响应更快但更耗算力。
+    save_pose_rate: 0.5
+    sigma_hit: 0.2  # 控制激光命中误差容忍度，越大越宽容但定位会更钝。
+    tf_broadcast: true
+    scan_topic: "/scan"
+    # TF 容差越大，系统越能容忍时间戳轻微不齐；过大可能掩盖 TF 延迟问题。
+    transform_tolerance: 0.5  # 增大可容忍时间戳轻微不齐，但可能掩盖 TF 延迟。
+    # 机器人累计移动超过这两个阈值后才触发一次粒子滤波更新。
+    # 阈值越小，定位更新更频繁、更稳，但 CPU 更高。
+    update_min_a: 0.03  # 降低后转向时定位更新更频繁，但 CPU 更高。
+    update_min_d: 0.03  # 降低后小位移也会更新定位，但 CPU 更高。
+    z_hit: 0.5  # 增大后更相信与地图匹配的激光命中。
+    z_max: 0.05  # 增大后会更宽容最大量程读数。
+    z_rand: 0.45  # 增大后会更宽容随机噪声，但定位约束变弱。
+    z_short: 0.05  # 增大后会更宽容突发近距离遮挡。
+    initial_pose:
+      x: -0.000
+      y: -0.002
+      yaw: 0.044
+
+map_server:  # 发布静态地图，供定位和规划使用。
+  ros__parameters:
+    # 地图服务器负责发布静态栅格地图；yaml_filename 会在 launch 中被重写。
+    use_sim_time: False
+    yaml_filename: ""  # launch 注入地图文件后，决定导航使用哪张静态地图。
+
+bt_navigator:  # 调度规划、控制和恢复行为，决定导航任务流程。
+  ros__parameters:
+    # 行为树导航器是 Nav2 的任务编排入口，负责串起规划、控制和恢复行为。
+    use_sim_time: False
+    global_frame: map
+    robot_base_frame: base_footprint
+    # 导航器读取的里程计 topic。这里使用 EKF 融合后的 /odometry/filtered。
+    odom_topic: /odometry/filtered
+    # 这些超时主要影响行为树节点等待各 action / service 的容忍时间。
+    bt_loop_duration: 10  # 控制行为树主循环节奏，越小响应越快但 CPU 更高。
+    default_server_timeout: 20  # 控制行为树等待服务/动作的默认超时，避免无期限卡住。
+    wait_for_service_timeout: 1000  # 控制启动时等待服务出现的时间，太短会误报服务不可用。
+    action_server_result_timeout: 900.0  # 控制等待导航 action 结果的最长时间。
+    # 保持默认的单点导航和多点导航两种 navigator。
+    navigators: ["navigate_to_pose", "navigate_through_poses"]
+    navigate_to_pose:
+      plugin: "nav2_bt_navigator::NavigateToPoseNavigator"
+    navigate_through_poses:
+      plugin: "nav2_bt_navigator::NavigateThroughPosesNavigator"
+    error_code_names:
+      - compute_path_error_code  # 规划路径失败错误码变量名。
+      - follow_path_error_code  # 跟随路径失败错误码变量名。
+
+controller_server:  # 把全局路径转换成实时速度命令。
+  ros__parameters:
+    # controller_server 负责把全局路径转换成实时速度命令。
+    # v0_1 在这里RPP 风格，目标是减少横移，优先先转向再前进。
+    use_sim_time: False
+    controller_frequency: 20.0  # 提高后速度命令更新更及时，但会增加 CPU 占用。
+    # costmap_update_timeout 表示等待局部代价地图更新的最长时间。
+    # 过小容易因局部地图更新慢而报控制失败，过大则故障暴露变慢。
+    costmap_update_timeout: 0.30  # 过小容易误报控制失败，过大则故障发现变慢。
+    enable_stamped_cmd_vel: True
+    # 小于这些阈值的速度会被视为 0。
+    # y 阈值设置得更大，相当于把很小的横移直接吞掉，避免残余侧移命令。
+    min_x_velocity_threshold: 0.001  # 压掉极小前后速度，避免底盘低速抖动。
+    min_y_velocity_threshold: 0.01  # 压掉残余横移速度，保持非横移观感。
+    min_theta_velocity_threshold: 0.001  # 压掉极小角速度，避免末端轻微抖动。
+    failure_tolerance: 0.3  # 短暂控制异常不会立刻中断，持续失败才触发恢复。
+    publish_errors: True
+    storage_id: "sqlite3"
+    odom_topic: "/odometry/filtered"
+    cmd_vel_out_topic: "cmd_vel_nav"
+    progress_checker_plugins: ["progress_checker"]
+    goal_checker_plugins: ["general_goal_checker"]
+    controller_plugins: ["FollowPath"]
+    use_realtime_priority: false
+
+    progress_checker:  # 防止机器人长时间卡住仍继续执行同一个导航任务。
+      # 进度检查器用于判断机器人是不是“长时间没真正移动”。
+      # 末端对正阶段可能主要是原地旋转，平移位移很小。
+      # 因此进一步降低位移阈值并放宽时间，避免 yaw 还没收完就被误判成没进展。
+      plugin: "nav2_controller::SimpleProgressChecker"
+      required_movement_radius: 0.05  # 降低后末端小范围调整也会被认为有进展。
+      movement_time_allowance: 30.0  # 放宽后末端对正不容易被误判卡住。
+
+    general_goal_checker:  # 决定何时把当前位置和姿态判定为已到达目标。
+      plugin: "nav2_controller::StoppedGoalChecker"
+      # StoppedGoalChecker 不仅检查 XY / yaw 误差，还要求底盘实际速度已接近 0。
+      # 这样可以避免 Nav2 在姿态刚进入容差、但车体还在惯性或估计滞后中继续转动时提前判成功。
+      stateful: true  # 保持到达判定连续，避免容差边缘来回跳变。
+      # 进一步收紧终点判定：位置容差和姿态容差都更小。
+      # 这样不会出现“XY 已到，但 yaw 还差不少就直接判定成功”的情况。
+      xy_goal_tolerance: 0.12  # 收紧后停靠位置更准，但更容易在目标附近反复调整。
+      yaw_goal_tolerance: 0.18  # 收紧后终点朝向更准，但对正时间更长。
+      trans_stopped_velocity: 0.05  # 降低后必须更接近静止才算到达。
+      rot_stopped_velocity: 0.02  # 降低后必须更接近停转才算到达。
+
+    FollowPath:  # 控制底盘沿全局路径运动，并在局部障碍前实时调整轨迹。
+      # 这些参数共同决定 TEB 的采样密度、速度约束和避障偏好。
+      plugin: "teb_local_planner::TebLocalPlannerROS"
+
+      teb_autosize: 1.0  # 允许 TEB 自动调整时间分辨率，保持轨迹优化稳定。
+      dt_ref: 0.20  # 控制相邻轨迹点的期望时间间隔，越小轨迹越细但计算越重。
+      dt_hysteresis: 0.05  # 减少时间栅格频繁增删，防止优化抖动。
+      max_samples: 300  # 限制轨迹采样点数量，防止长路径优化耗时过高。
+      global_plan_overwrite_orientation: true  # 用全局路径方向初始化轨迹朝向，提升跟线一致性。
+      allow_init_with_backwards_motion: false  # 禁止一开始就倒车，优先形成前进轨迹。
+      max_global_plan_lookahead_dist: 1.5  # 控制局部控制器前瞻多远，过大容易过早保守。
+      global_plan_viapoint_sep: 0.4  # 控制路径约束点间距，越小越贴全局路径但更难绕障。
+      global_plan_prune_distance: 0.2  # 控制已走过路径被裁掉的距离，避免控制器回追旧路径。
+      exact_arc_length: true  # 使用更准确的弧长计算，提升速度和时间估计一致性。
+      feasibility_check_no_poses: 3  # 只检查前几段轨迹可行性，兼顾安全和实时性。
+      publish_feedback: true
+
+      max_vel_x: 0.80  # 限制前进最高速度，直接影响导航效率和安全余量。
+      max_vel_x_backwards: 0.05  # 基本压住倒车速度，减少后退动作。
+      max_vel_theta: 0.80  # 限制最大转向速度，影响原地对正速度。
+      acc_lim_x: 0.45  # 限制前后加速度，减少起步和刹停冲击。
+      acc_lim_theta: 0.2  # 限制角加速度，减少转向过冲。
+      max_vel_y: 0.10  # 压低横移上限，让底盘更偏向先转向再前进。
+      acc_lim_y: 0.05  # 压低横向加速度，避免明显侧滑动作。
+
+      footprint_model:  # 用简化车体模型参与 TEB 碰撞约束。
+        type: "line"
+        line_start: [-0.30, 0.0]  # 定义车体线模型后端，影响轨迹避障边界。
+        line_end: [0.30, 0.0]  # 定义车体线模型前端，影响轨迹避障边界。
+
+      free_goal_vel: false  # 要求到目标时降速，有利于终点稳定停车。
+
+      min_obstacle_dist: 0.22  # 控制机器人离障碍的最小安全距离。
+      inflation_dist: 0.30  # 控制障碍斥力开始影响轨迹的范围。
+      include_costmap_obstacles: true  # 让 TEB 直接考虑局部代价地图中的障碍。
+      costmap_obstacles_behind_robot_dist: 0.5  # 保留车后一定距离障碍，防止倒车或转身时碰撞。
+      obstacle_poses_affected: 10  # 控制一个障碍会影响多少个轨迹点，越大避障越保守。
+      costmap_converter_plugin: ""
+      costmap_converter_spin_thread: false
+      costmap_converter_rate: 5
+
+      no_inner_iterations: 5  # 增大可让单轮优化更充分，但会增加每周期耗时。
+      no_outer_iterations: 3  # 增大可提升整体优化质量，但会降低实时性。
+      optimization_activate: true
+      optimization_verbose: false
+      penalty_epsilon: 0.01  # 给约束留出微小缓冲，避免优化在边界抖动。
+      obstacle_cost_exponent: 4.0  # 放大近障碍代价，使轨迹更倾向远离障碍。
+      weight_max_vel_x: 1.0  # 提高后更严格惩罚超过前进速度上限的轨迹。
+      weight_max_vel_y: 1.0  # 提高后更严格惩罚横移速度，减少侧向动作。
+      weight_max_vel_theta: 1.0  # 提高后更严格惩罚过快转向。
+      weight_acc_lim_x: 20.0  # 提高后更强调平滑前后加减速。
+      weight_acc_lim_y: 1.0  # 提高后更强调横向加速度受限。
+      weight_acc_lim_theta: 80.0  # 提高后更强调平滑转向，减少角速度突变。
+      weight_kinematics_nh: 20.0  # 提高后更抑制非完整约束下的横向运动。
+      weight_kinematics_forward_drive: 200.0  # 提高后强烈偏向前进，减少倒车轨迹。
+      weight_kinematics_turning_radius: 1.0  # 约束转弯半径，避免轨迹出现过急转弯。
+      weight_optimaltime: 0.8  # 提高后更追求快速到达，可能牺牲平滑和避障余量。
+      weight_shortest_path: 0.0  # 关闭最短路径偏好，避免为了抄近路贴障碍。
+      weight_obstacle: 50.0  # 提高后更远离障碍，但窄道里可能更保守。
+      weight_inflation: 0.25  # 控制膨胀区代价对轨迹的影响强度。
+      weight_viapoint: 3.0  # 提高后更贴近全局路径，绕障灵活性会下降。
+      weight_adapt_factor: 2.0  # 控制优化权重自适应增长速度。
+
+      enable_homotopy_class_planning: false  # 关闭多拓扑路径搜索，降低计算量并保持行为稳定。
+
+      shrink_horizon_backup: true  # 轨迹不可行时缩短规划视野，帮助从局部困境恢复。
+      shrink_horizon_min_duration: 10.0  # 控制缩短视野至少持续多久，避免频繁切换。
+      oscillation_recovery: true  # 检测到来回摆动时启用恢复逻辑。
+      oscillation_v_eps: 0.02  # 判定线速度振荡时忽略极小速度噪声。
+      oscillation_omega_eps: 0.03  # 判定角速度振荡时忽略极小角速度噪声。
+      oscillation_recovery_min_duration: 5.0  # 控制恢复动作最短持续时间，避免刚触发就退出。
+      oscillation_filter_duration: 5.0  # 控制振荡检测的时间窗口，越大越不敏感。
+
+planner_server:  # 生成从当前位置到目标点的全局路径。
+  ros__parameters:
+    # planner_server 负责生成全局路径。
+    # 使用 Navfn，更接近传统车式导航的全局路径形态。
+    use_sim_time: False
+    expected_planner_frequency: 20.0  # 提高后重新规划更及时，但会增加 CPU 占用。
+    planner_plugins: ["GridBased"]
+
+    GridBased:
+      # NavfnPlanner 输出标准 2D 栅格路径，不再显式规划横移 motion primitive。
+      plugin: "nav2_navfn_planner::NavfnPlanner"
+      tolerance: 0.5  # 放宽目标附近的可接受区域，减少末端反复修正。
+      use_astar: true  # 启用 A* 可减少无效扩展，提升规划效率。
+      allow_unknown: true  # 允许从未知区域中找路径，扩大可达范围。
+
+behavior_server:  # 执行原地旋转、后退和直行等恢复动作。
+  ros__parameters:
+    # behavior_server 负责恢复行为，例如原地旋转、倒车、沿朝向直行等。
+    use_sim_time: False
+    enable_stamped_cmd_vel: True
+    costmap_topic: local_costmap/costmap_raw
+    footprint_topic: local_costmap/published_footprint
+    cycle_frequency: 10.0  # 提高后恢复动作响应更快，但会更频繁刷新。
+    behavior_plugins: ["spin", "backup", "wait", "drive_on_heading", "assisted_teleop"]
+
+    spin:
+      plugin: "nav2_behaviors::Spin"
+    backup:
+      plugin: "nav2_behaviors::BackUp"
+    wait:
+      plugin: "nav2_behaviors::Wait"
+    drive_on_heading:
+      plugin: "nav2_behaviors::DriveOnHeading"
+    assisted_teleop:
+      plugin: "nav2_behaviors::AssistedTeleop"
+
+    # 更强调快速原地转向和恢复。
+    simulate_ahead_time: 2.0  # 提前仿真更久可更早发现碰撞风险，但计算更重。
+    max_rotational_vel: 4.5  # 提高原地转向速度，缩短恢复和对正时间。
+    min_rotational_vel: 1.0  # 防止低速转动太慢而陷入抖动区。
+    rotational_acc_lim: 5.0  # 限制转向起停的激烈程度，避免动作过冲。
+    global_frame: odom
+    robot_base_frame: base_footprint
+    transform_tolerance: 0.1  # 增大可容忍时间戳轻微不齐，但可能掩盖 TF 延迟。
+
+smoother_server:  # 平滑全局路径，减少局部控制抖动。
+  ros__parameters:
+    # smoother_server 负责对全局路径做几何平滑。
+    # 它平滑的是“路径形状”，不是最终底盘速度。
+    use_sim_time: False
+    smoother_plugins: ["simple_smoother"]
+
+    simple_smoother:  # 通过迭代优化路径曲率，让路径更易跟随。
+      plugin: "nav2_smoother::SimpleSmoother"
+      tolerance: 1.0  # 放宽目标附近的可接受区域，减少末端反复修正。
+      max_its: 1000  # 提高上限可换来更平滑的路径，但会更耗时。
+      do_refinement: True  # 再做一次细化以提升曲线连续性。
+
+velocity_smoother:  # 限制速度突变，让最终速度输出更平顺。
+  ros__parameters:
+    # velocity_smoother 位于控制链路末端：
+    # cmd_vel_nav -> cmd_vel_smoothed -> /cmd_vel。
+    # 非横移限幅：y 方向速度和加速度全部压成 0。
+    use_sim_time: False
+    smoothing_frequency: 35.0  # 提高后输出更连续，但会增加 CPU 占用。
+    # 使用闭环平滑，参考实际里程计速度而不是只按命令推演，减少停转时的过冲。
+    feedback: "CLOSED_LOOP"  # 使用实际里程计反馈修正速度，减少过冲。
+    scale_velocities: False
+    enable_stamped_cmd_vel: True
+    cmd_vel_in_topic: "cmd_vel_nav"
+    cmd_vel_out_topic: "cmd_vel_smoothed"
+    max_velocity: [0.9, 0.10, 1.0]  # 限制最高线速度和角速度，防止控制命令过激。
+    min_velocity: [-0.5, -0.10, -1.0]  # 限制最小速度，保留必要的倒退和反向转动能力。
+    max_accel: [0.5, 0.10, 1.0]  # 限制加速度，减少起停冲击和轨迹抖动。
+    max_decel: [-1.0, -0.10, -1.0]  # 限制减速度，避免刹停过猛。
+    odom_topic: "/odometry/filtered"
+    odom_duration: 0.1  # 用更短时间窗估计速度，响应更快但更敏感。
+    deadband_velocity: [0.0, 0.001, 0.001]  # 压掉很小的残余速度，减少末端抖动。
+    velocity_timeout: 1.0  # 超过这个时间没有新命令就认为速度失效并衰减。
+
+waypoint_follower:  # 按航点顺序执行多点任务。
+  ros__parameters:
+    # waypoint_follower 负责多点任务时逐点执行；当前主要保留默认能力。
+    use_sim_time: False
+    loop_rate: 20  # 提高轮询速度能更快切换到下一个航点。
+    stop_on_failure: false  # 失败时立即停下，还是继续执行后续航点。
+    waypoint_task_executor_plugin: "wait_at_waypoint"
+
+    wait_at_waypoint:  # 到点后短暂停留，给外设或任务流程留出缓冲。
+      plugin: "nav2_waypoint_follower::WaitAtWaypoint"
+      enabled: true
+      waypoint_pause_duration: 200  # 增加停留时长可确保到点动作执行完成。
+
+route_server:  # 预留路线级能力扩展，目前只保留最小配置。
+  ros__parameters:
+    # route_server 目前仅保留基础配置，供后续路线级能力扩展。
+    use_sim_time: False
+
+collision_monitor:  # 在最终出速度前做碰撞裁决，必要时停车或减速。
+  ros__parameters:
+    # collision_monitor 是最终速度出口前的安全裁决器。
+    # 它不会重新规划路径，但可以直接把速度裁掉或停掉。
+    # 现场出现“规划正常但车不走”时，这一块是第一优先级排查对象之一。
+    use_sim_time: False
+    enable_stamped_cmd_vel: True
+    base_frame_id: "base_footprint"
+    odom_frame_id: "odom"
+    cmd_vel_in_topic: "cmd_vel_smoothed"
+    cmd_vel_out_topic: "cmd_vel"
+    state_topic: "collision_monitor_state"
+    transform_tolerance: 0.30  # 增大可容忍时间戳轻微不齐，但可能掩盖 TF 延迟。
+    source_timeout: 1.00  # 控制持续时间或超时窗口。
+    base_shift_correction: true
+    stop_pub_timeout: 0.10  # 控制持续时间或超时窗口。
+
+    # 这里保留基础硬停和 approach 减速，避免“速度没有落进任何 polygon”导致直接卡死。
+    polygons: ["FootprintStop", "FootprintApproach"]
+
+    FootprintStop:  # 机器人进入这个区域时直接硬停。
+      # 进入这个固定 polygon 就直接停。
+      # 这里按实车最外轮廓 65 x 36 cm 配置，并给车头/车侧留少量余量。
+      type: "polygon"
+      points: "[[0.33, 0.20], [0.33, -0.20], [-0.33, -0.20], [-0.33, 0.20]]"
+      action_type: "stop"
+      min_points: 1  # 需要更多障碍点才触发，减少误减速。
+      visualize: true
+      polygon_pub_topic: "footprint_stop_polygon"
+      enabled: true
+
+    FootprintApproach:  # 在预计碰撞前提前减速，给控制器留出缓冲。
+      # approach 模式不会立刻硬停，而是按与障碍物的预计碰撞时间提前减速。
+      type: "polygon"
+      action_type: "approach"
+      footprint_topic: "/local_costmap/published_footprint"
+      time_before_collision: 0.50  # 越大越保守，越早开始降速。
+      simulation_time_step: 0.05  # 仿真步长越小，碰撞预测越细但越耗算力。
+      min_points: 8  # 需要更多障碍点才触发，减少误减速。
+      visualize: false
+      enabled: true
+
+    observation_sources: ["scan"]
+
+    scan:  # 用激光直接判断前方是否存在碰撞风险。
+      # collision_monitor 也单独订阅 /scan，和 costmap 不是一回事。
+      source_timeout: 1.00  # 控制持续时间或超时窗口。
+      type: "scan"
+      topic: "/scan"
+      enabled: true
+
+global_costmap:  # 给全局规划提供绕障约束，决定全局路径如何避开障碍。
+  global_costmap:
+    ros__parameters:
+      # 全局代价地图给 planner_server 用，决定“全局路径看起来怎么绕”。
+      # 刷新频率和膨胀半径。
+      use_sim_time: False
+      update_frequency: 1.0  # 提高后响应更快，但会增加 CPU 占用。
+      publish_frequency: 1.0  # 提高后响应更快，但会增加 CPU 占用。
+      always_send_full_costmap: True
+      global_frame: map
+      robot_base_frame: base_footprint
+      # 使用实车最外轮廓 65 x 36 cm 的矩形包络。
+      # footprint 比 robot_radius 更真实，适合非圆形底盘。
+      footprint: "[[0.33, 0.20], [0.33, -0.20], [-0.33, -0.20], [-0.33, 0.20]]"
+      # footprint_padding 用于在碰撞盒外再加一圈安全裕量。
+      footprint_padding: 0.02  # 在车体外再留一圈安全裕量。
+      resolution: 0.05  # 控制代价地图分辨率，越小越精细但越耗算力。
+      track_unknown_space: true
+      transform_tolerance: 0.30  # 增大可容忍时间戳轻微不齐，但可能掩盖 TF 延迟。
+      plugins: ["static_layer", "obstacle_layer", "inflation_layer"]
+
+      static_layer:  # 把静态地图投影进代价地图。
+        plugin: "nav2_costmap_2d::StaticLayer"
+        map_topic: /map
+        map_subscribe_transient_local: True
+
+      obstacle_layer:  # 把实时传感器障碍写入代价地图。
+        plugin: "nav2_costmap_2d::ObstacleLayer"
+        enabled: True
+        footprint_clearing_enabled: True
+        observation_sources: scan
+        scan:  # 用激光直接判断前方是否存在碰撞风险。
+          # obstacle_max_range 是“把障碍写进地图”的最远距离；
+          # raytrace_max_range 是“清除障碍”的最远距离。
+          # 这两个值过大时，远处障碍会更早影响全局绕行。
+          topic: /scan
+          max_obstacle_height: 2.0
+          clearing: True
+          marking: True
+          data_type: "LaserScan"
+          inf_is_valid: True
+          # observation_persistence 表示障碍保留多久。
+          # 数值越大，短暂误检更不容易立刻消失，但地图也更“黏”。
+          observation_persistence: 0.3  # 延长障碍保留时间，能抑制短暂误检，但地图会更“黏”。
+          obstacle_min_range: 0.0  # 控制障碍写入从多近开始生效。
+          obstacle_max_range: 3.5  # 控制障碍写入能影响多远的距离。
+          raytrace_min_range: 0.0  # 控制清除射线从多近开始生效。
+          raytrace_max_range: 4.0  # 控制清除射线能清掉多远的障碍。
+
+      inflation_layer:  # 把障碍外扩成安全缓冲区。
+        plugin: "nav2_costmap_2d::InflationLayer"
+        # 全局膨胀半径稍大一些，绕障余量。
+        cost_scaling_factor: 4.0  # 控制障碍代价衰减速度，越大越不容易贴障。
+        inflation_radius: 0.60  # 控制障碍外扩到多大范围，越大越保守。
+
+local_costmap:  # 给局部控制提供实时避障约束，直接影响底盘是否敢继续走。
+  local_costmap:
+    ros__parameters:
+      # 局部代价地图给 controller_server 用，直接决定局部避障和“会不会卡住不动”。
+      # 更小的窗口和更低刷新率，减少“看得太远过早保守”。
+      use_sim_time: False
+      update_frequency: 5.0  # 提高后响应更快，但会增加 CPU 占用。
+      publish_frequency: 2.0  # 提高后响应更快，但会增加 CPU 占用。
+      always_send_full_costmap: True
+      global_frame: odom
+      robot_base_frame: base_footprint
+      rolling_window: true
+      width: 3  # 控制局部窗口大小，越大看得越远但越保守。
+      height: 3  # 控制局部窗口大小，越大看得越远但越保守。
+      resolution: 0.05  # 控制代价地图分辨率，越小越精细但越耗算力。
+      # 局部代价地图必须和全局代价地图使用同一套真实车体外轮廓。
+      footprint: "[[0.33, 0.20], [0.33, -0.20], [-0.33, -0.20], [-0.33, 0.20]]"
+      footprint_padding: 0.02  # 在车体外再留一圈安全裕量。
+      transform_tolerance: 0.15  # 增大可容忍时间戳轻微不齐，但可能掩盖 TF 延迟。
+      plugins: ["static_layer", "obstacle_layer", "inflation_layer"]
+
+      static_layer:  # 把静态地图投影进代价地图。
+        plugin: "nav2_costmap_2d::StaticLayer"
+        map_topic: /map
+        map_subscribe_transient_local: True
+
+      obstacle_layer:  # 把实时传感器障碍写入代价地图。
+        plugin: "nav2_costmap_2d::ObstacleLayer"
+        enabled: True
+        footprint_clearing_enabled: True
+        observation_sources: scan
+        scan:  # 用激光直接判断前方是否存在碰撞风险。
+          # 这里过远、过大时，控制器会显得保守，甚至出现还有空间但不动。
+          # 缩短局部感知距离，让“临近目标点但两侧有物体”的场景更容易继续收敛。
+          topic: /scan
+          max_obstacle_height: 2.0
+          clearing: True
+          marking: True
+          data_type: "LaserScan"
+          inf_is_valid: True
+          # 去掉局部障碍残留，避免 RViz 中“实物已离开但代价还挂着”的假障碍。
+          observation_persistence: 0.0  # 延长障碍保留时间，能抑制短暂误检，但地图会更“黏”。
+          obstacle_min_range: 0.0  # 控制障碍写入从多近开始生效。
+          obstacle_max_range: 1.5  # 控制障碍写入能影响多远的距离。
+          raytrace_min_range: 0.0  # 控制清除射线从多近开始生效。
+          raytrace_max_range: 2.0  # 控制清除射线能清掉多远的障碍。
+
+      inflation_layer:  # 把障碍外扩成安全缓冲区。
+        plugin: "nav2_costmap_2d::InflationLayer"
+        # 进一步缩小局部膨胀并提高衰减，让障碍代价不要在整块窗口里铺得太厚。
+        cost_scaling_factor: 6.0  # 控制障碍代价衰减速度，越大越不容易贴障。
+        inflation_radius: 0.15  # 控制障碍外扩到多大范围，越大越保守。
+

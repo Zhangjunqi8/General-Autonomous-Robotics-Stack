@@ -152,6 +152,8 @@ public:
     set_initial_pose_service_name_ = declare_parameter<std::string>(
       "set_initial_pose_service_name", "/hanmole/agv/set_initial_pose");
     nav_status_topic_ = declare_parameter<std::string>("nav_status_topic", "/nav_status");
+    nav_feedback_topic_ = declare_parameter<std::string>(
+      "nav_feedback_topic", "/hanmole/agv/nav_feedback");
     target_state_topic_ = declare_parameter<std::string>(
       "target_state_topic", "/hanmole_navigation/target_state");
     initial_pose_topic_ = declare_parameter<std::string>("initial_pose_topic", "/initialpose");
@@ -233,11 +235,20 @@ public:
       rclcpp::ServicesQoS(),
       callback_group_);
 
-    nav_status_publisher_ = create_publisher<std_msgs::msg::String>(nav_status_topic_, 10);
-    target_state_publisher_ = create_publisher<std_msgs::msg::String>(target_state_topic_, 10);
+    const auto state_qos = rclcpp::QoS(10).reliable().transient_local();
+    nav_status_publisher_ = create_publisher<std_msgs::msg::String>(nav_status_topic_, state_qos);
+    nav_feedback_publisher_ = create_publisher<NavigateToPose::Impl::FeedbackMessage>(
+      nav_feedback_topic_,
+      rclcpp::QoS(10).reliable());
+    target_state_publisher_ = create_publisher<std_msgs::msg::String>(target_state_topic_, state_qos);
     initial_pose_publisher_ = create_publisher<geometry_msgs::msg::PoseWithCovarianceStamped>(
       initial_pose_topic_,
       rclcpp::QoS(1).transient_local().reliable());
+
+    status_publish_timer_ = create_wall_timer(
+      std::chrono::seconds(1),
+      [this]() { republish_state(); },
+      callback_group_);
 
     rclcpp::SubscriptionOptions subscription_options;
     subscription_options.callback_group = callback_group_;
@@ -334,6 +345,9 @@ private:
     std::shared_ptr<SetString::Response> response)
   {
     std::optional<std::pair<double, double>> current_pose_xy;
+    std::shared_ptr<GoalHandleNavigateToPose> active_goal_handle;
+    std::string active_target_name;
+    bool switch_in_progress = false;
     {
       std::lock_guard<std::mutex> lock(state_mutex_);
       if (!navigation_ready_) {
@@ -342,43 +356,79 @@ private:
         return;
       }
       current_pose_xy = current_pose_xy_;
-      if (active_goal_handle_) {
+      active_goal_handle = active_goal_handle_;
+      active_target_name = active_target_name_;
+      switch_in_progress = switching_to_pending_target_;
+    }
+
+    if (active_goal_handle) {
+      const auto target_pose = repository_.resolve_target(target_group_, request->data, current_pose_xy);
+      if (!target_pose.has_value()) {
         response->success = false;
-        response->result = "navigation already active";
+        response->result = "target not found: " + request->data;
         return;
       }
-    }
 
-    const auto target_pose = repository_.resolve_target(target_group_, request->data, current_pose_xy);
-    if (!target_pose.has_value()) {
-      response->success = false;
-      response->result = "target not found: " + request->data;
+      bool request_cancel = false;
+      {
+        std::lock_guard<std::mutex> lock(state_mutex_);
+        pending_target_name_ = request->data;
+        if (!switching_to_pending_target_) {
+          switching_to_pending_target_ = true;
+          request_cancel = true;
+        }
+      }
+
+      if (request_cancel || !switch_in_progress) {
+        action_client_->async_cancel_goal(active_goal_handle);
+      }
+      const std::string current_target = active_target_name.empty() ? "idle" : active_target_name;
+      publish_state("canceling", current_target);
+      response->success = true;
+      response->result = "switch requested: " + current_target + " -> " + request->data;
       return;
     }
 
+    response->success = start_navigation_to_target(request->data, response->result);
+  }
+
+  bool start_navigation_to_target(const std::string & target_name, std::string & result_message)
+  {
+    std::optional<std::pair<double, double>> current_pose_xy;
+    std::optional<double> current_pose_yaw;
     {
       std::lock_guard<std::mutex> lock(state_mutex_);
-      if (current_pose_xy_.has_value() && current_pose_yaw_.has_value()) {
-        const double dx = target_pose->x - current_pose_xy_->first;
-        const double dy = target_pose->y - current_pose_xy_->second;
-        const double xy_error = std::hypot(dx, dy);
-        const double yaw_error = std::abs(normalize_angle(target_pose->yaw - *current_pose_yaw_));
-        if (xy_error <= goal_xy_tolerance_ && yaw_error <= goal_yaw_tolerance_) {
-          publish_state("succeeded", request->data);
-          publish_state("idle", "idle");
-          response->success = true;
-          response->result = "already at target: " + request->data;
-          return;
-        }
+      if (!navigation_ready_) {
+        result_message = "navigation stack not ready";
+        return false;
+      }
+      current_pose_xy = current_pose_xy_;
+      current_pose_yaw = current_pose_yaw_;
+    }
+
+    const auto target_pose = repository_.resolve_target(target_group_, target_name, current_pose_xy);
+    if (!target_pose.has_value()) {
+      result_message = "target not found: " + target_name;
+      return false;
+    }
+
+    if (current_pose_xy.has_value() && current_pose_yaw.has_value()) {
+      const double dx = target_pose->x - current_pose_xy->first;
+      const double dy = target_pose->y - current_pose_xy->second;
+      const double xy_error = std::hypot(dx, dy);
+      const double yaw_error = std::abs(normalize_angle(target_pose->yaw - *current_pose_yaw));
+      if (xy_error <= goal_xy_tolerance_ && yaw_error <= goal_yaw_tolerance_) {
+        publish_terminal_state("succeeded", target_name);
+        result_message = "already at target: " + target_name;
+        return true;
       }
     }
 
-    publish_state("waiting_for_nav2", request->data);
+    publish_state("waiting_for_nav2", target_name);
     if (!action_client_->wait_for_action_server(action_wait_timeout_)) {
-      publish_state("failed", "idle");
-      response->success = false;
-      response->result = "navigate_to_pose action server is unavailable";
-      return;
+      publish_terminal_state("failed");
+      result_message = "navigate_to_pose action server is unavailable";
+      return false;
     }
 
     NavigateToPose::Goal goal;
@@ -389,36 +439,44 @@ private:
     goal.pose.pose.orientation = quaternion_from_yaw(target_pose->yaw);
 
     auto options = typename rclcpp_action::Client<NavigateToPose>::SendGoalOptions();
+    options.feedback_callback =
+      [this](
+        GoalHandleNavigateToPose::SharedPtr goal_handle,
+        const std::shared_ptr<const NavigateToPose::Feedback> feedback)
+      {
+        NavigateToPose::Impl::FeedbackMessage feedback_message;
+        feedback_message.goal_id.uuid = goal_handle->get_goal_id();
+        feedback_message.feedback = *feedback;
+        nav_feedback_publisher_->publish(feedback_message);
+      };
     options.result_callback =
-      [this, target_name = request->data](const GoalHandleNavigateToPose::WrappedResult & result) {
+      [this, target_name](const GoalHandleNavigateToPose::WrappedResult & result) {
         handle_result(target_name, result);
       };
 
     auto future = action_client_->async_send_goal(goal, options);
     if (future.wait_for(action_wait_timeout_) != std::future_status::ready) {
-      publish_state("failed", "idle");
-      response->success = false;
-      response->result = "timed out waiting for goal acceptance";
-      return;
+      publish_terminal_state("failed");
+      result_message = "timed out waiting for goal acceptance";
+      return false;
     }
 
     auto goal_handle = future.get();
     if (!goal_handle) {
-      publish_state("failed", "idle");
-      response->success = false;
-      response->result = "goal rejected by action server";
-      return;
+      publish_terminal_state("failed");
+      result_message = "goal rejected by action server";
+      return false;
     }
 
     {
       std::lock_guard<std::mutex> lock(state_mutex_);
       active_goal_handle_ = goal_handle;
-      active_target_name_ = request->data;
+      active_target_name_ = target_name;
     }
-    publish_state("navigating", request->data);
+    publish_state("navigating", target_name);
 
-    response->success = true;
-    response->result = "goal accepted: " + request->data;
+    result_message = "goal accepted: " + target_name;
+    return true;
   }
 
   void handle_cancel_request(std::shared_ptr<Trigger::Response> response)
@@ -428,6 +486,8 @@ private:
     {
       std::lock_guard<std::mutex> lock(state_mutex_);
       goal_handle = active_goal_handle_;
+      pending_target_name_.reset();
+      switching_to_pending_target_ = false;
       if (!active_target_name_.empty()) {
         active_target_name = active_target_name_;
       }
@@ -471,17 +531,73 @@ private:
       nav_status = "canceled";
     }
 
+    std::optional<std::string> pending_target_name;
     {
       std::lock_guard<std::mutex> lock(state_mutex_);
       active_goal_handle_.reset();
       active_target_name_.clear();
+      if (switching_to_pending_target_ && pending_target_name_.has_value()) {
+        pending_target_name = pending_target_name_;
+        pending_target_name_.reset();
+        switching_to_pending_target_ = false;
+      }
     }
 
-    publish_state(nav_status, "idle");
+    if (pending_target_name.has_value()) {
+      RCLCPP_INFO(
+        get_logger(),
+        "navigation result for %s while switching target: %s",
+        target_name.c_str(),
+        nav_status.c_str());
+      std::string result_message;
+      if (!start_navigation_to_target(*pending_target_name, result_message)) {
+        publish_terminal_state("failed");
+        RCLCPP_WARN(
+          get_logger(),
+          "failed to start pending navigation target %s: %s",
+          pending_target_name->c_str(),
+          result_message.c_str());
+      }
+      return;
+    }
+
+    publish_terminal_state(nav_status);
     RCLCPP_INFO(get_logger(), "navigation result for %s: %s", target_name.c_str(), nav_status.c_str());
   }
 
+  void publish_terminal_state(
+    const std::string & nav_status,
+    const std::string & target_state = "idle")
+  {
+    publish_state(nav_status, target_state);
+    publish_state("idle", "idle");
+  }
+
   void publish_state(const std::string & nav_status, const std::string & target_state)
+  {
+    {
+      std::lock_guard<std::mutex> lock(published_state_mutex_);
+      last_nav_status_ = nav_status;
+      last_target_state_ = target_state;
+    }
+
+    publish_state_message(nav_status, target_state);
+  }
+
+  void republish_state()
+  {
+    std::string nav_status;
+    std::string target_state;
+    {
+      std::lock_guard<std::mutex> lock(published_state_mutex_);
+      nav_status = last_nav_status_;
+      target_state = last_target_state_;
+    }
+
+    publish_state_message(nav_status, target_state);
+  }
+
+  void publish_state_message(const std::string & nav_status, const std::string & target_state)
   {
     std_msgs::msg::String nav_status_message;
     nav_status_message.data = nav_status;
@@ -769,6 +885,7 @@ private:
   std::string cancel_service_name_;
   std::string set_initial_pose_service_name_;
   std::string nav_status_topic_;
+  std::string nav_feedback_topic_;
   std::string target_state_topic_;
   std::string initial_pose_topic_;
   std::chrono::milliseconds action_wait_timeout_{3000};
@@ -783,6 +900,8 @@ private:
   std::optional<double> current_pose_yaw_;
   std::shared_ptr<GoalHandleNavigateToPose> active_goal_handle_;
   std::string active_target_name_;
+  std::optional<std::string> pending_target_name_;
+  bool switching_to_pending_target_{false};
   bool navigation_ready_{false};
 
   StartupState startup_state_{StartupState::BootDelay};
@@ -811,6 +930,7 @@ private:
   rclcpp::Client<GetState>::SharedPtr controller_server_state_client_;
   rclcpp::Client<GetState>::SharedPtr bt_navigator_state_client_;
   rclcpp::Publisher<std_msgs::msg::String>::SharedPtr nav_status_publisher_;
+  rclcpp::Publisher<NavigateToPose::Impl::FeedbackMessage>::SharedPtr nav_feedback_publisher_;
   rclcpp::Publisher<std_msgs::msg::String>::SharedPtr target_state_publisher_;
   rclcpp::Publisher<geometry_msgs::msg::PoseWithCovarianceStamped>::SharedPtr initial_pose_publisher_;
   rclcpp::Subscription<sensor_msgs::msg::LaserScan>::SharedPtr scan_subscription_;
@@ -822,6 +942,10 @@ private:
   rclcpp::Service<Trigger>::SharedPtr cancel_service_;
   rclcpp::Service<Trigger>::SharedPtr set_initial_pose_service_;
   rclcpp::TimerBase::SharedPtr startup_timer_;
+  rclcpp::TimerBase::SharedPtr status_publish_timer_;
+  std::mutex published_state_mutex_;
+  std::string last_nav_status_{"idle"};
+  std::string last_target_state_{"idle"};
 };
 
 }  // namespace
