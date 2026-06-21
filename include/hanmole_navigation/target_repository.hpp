@@ -40,6 +40,7 @@ public:
     const std::string & target_name,
     std::optional<std::pair<double, double>> current_pose_xy) const;
   std::string catalog_json(const std::string & group) const;
+  std::string pose_list_json(const std::string & group) const;
 
 private:
   std::string frame_{"map"};

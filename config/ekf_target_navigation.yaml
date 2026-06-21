@@ -26,6 +26,7 @@ nav2_target_gateway:
     lifecycle_request_timeout_ms: 12000
     stable_tf_success_count: 3
     navigate_action_name: "/navigate_to_pose"
+    navigate_action_status_topic: "/navigate_to_pose/_action/status"
     navigate_service_name: "/hanmole/agv/navigate_to_pose"
     cancel_service_name: "/hanmole/agv/navigate_cancel"
     set_initial_pose_service_name: "/hanmole/agv/set_initial_pose"

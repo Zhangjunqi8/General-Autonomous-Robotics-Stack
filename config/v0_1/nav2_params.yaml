@@ -149,7 +149,7 @@ controller_server:  # 把全局路径转换成实时速度命令。
         time_step: 3
 
       # 规范的 Critics 打分器列表声明
-      critics: 
+      critics:
         - ConstraintCritic
         - ObstaclesCritic
         - GoalCritic
@@ -168,7 +168,7 @@ controller_server:  # 把全局路径转换成实时速度命令。
         enabled: true
         cost_power: 1
         repulsion_weight: 4.0
-        cost_weight: 5.0      # 动态绕障的软排斥权重，实现丝滑绕行的核心参数
+        cost_weight: 8.0      # 动态绕障的软排斥权重，实现丝滑绕行的核心参数
       GoalCritic:
         enabled: true
         cost_power: 1
@@ -192,7 +192,7 @@ controller_server:  # 把全局路径转换成实时速度命令。
       PreferForwardCritic:
         enabled: true
         cost_power: 1
-        cost_weight: 15.0      # 注释：设为极低！取消对非横移运动的偏好，彻底释放麦轮螃蟹步天赋
+        cost_weight: 1.0      # 注释：设为极低！取消对非横移运动的偏好，彻底释放麦轮螃蟹步天赋
 
 planner_server:  # 生成从当前位置到目标点的全局路径。
   ros__parameters:
@@ -316,12 +316,12 @@ collision_monitor:  # 在最终出速度前做碰撞裁决，必要时停车或�
       # 进入这个固定 polygon 就直接停。
       # 这里按实车最外轮廓 65 x 36 cm 配置，并给车头/车侧留少量余量。
       type: "polygon"
-      points: "[[0.33, 0.30], [0.33, -0.30], [-0.33, -0.30], [-0.33, 0.30]]"
+      points: "[[0.31, 0.30], [0.31, -0.30], [-0.33, -0.30], [-0.33, 0.30]]"
       action_type: "stop"
       min_points: 1  # 需要更多障碍点才触发，减少误减速。
       visualize: true
       polygon_pub_topic: "footprint_stop_polygon"
-      enabled: true
+      enabled: false
 
     FootprintApproach:  # 在预计碰撞前提前减速，给控制器留出缓冲。
       # approach 模式不会立刻硬停，而是按与障碍物的预计碰撞时间提前减速。
@@ -356,7 +356,7 @@ global_costmap:  # 给全局规划提供绕障约束，决定全局路径如何�
       robot_base_frame: base_footprint
       # 使用实车最外轮廓 65 x 36 cm 的矩形包络。
       # footprint 比 robot_radius 更真实，适合非圆形底盘。
-      footprint: "[[0.33, 0.30], [0.33, -0.30], [-0.33, -0.30], [-0.33, 0.30]]"
+      footprint: "[[0.31, 0.30], [0.31, -0.30], [-0.33, -0.30], [-0.33, 0.30]]"
       # footprint_padding 用于在碰撞盒外再加一圈安全裕量。
       footprint_padding: 0.02  # 在车体外再留一圈安全裕量。
       resolution: 0.05  # 控制代价地图分辨率，越小越精细但越耗算力。
@@ -395,7 +395,7 @@ global_costmap:  # 给全局规划提供绕障约束，决定全局路径如何�
       inflation_layer:  # 把障碍外扩成安全缓冲区。
         plugin: "nav2_costmap_2d::InflationLayer"
         # 全局膨胀半径稍大一些，绕障余量。
-        cost_scaling_factor: 4.0  # 控制障碍代价衰减速度，越大越不容易贴障。
+        cost_scaling_factor: 2.0  # 控制障碍代价衰减速度，越大越不容易贴障。
         inflation_radius: 0.60  # 控制障碍外扩到多大范围，越大越保守。
 
 local_costmap:  # 给局部控制提供实时避障约束，直接影响底盘是否敢继续走。
@@ -414,7 +414,7 @@ local_costmap:  # 给局部控制提供实时避障约束，直接影响底盘�
       height: 3  # 控制局部窗口大小，越大看得越远但越保守。
       resolution: 0.05  # 控制代价地图分辨率，越小越精细但越耗算力。
       # 局部代价地图必须和全局代价地图使用同一套真实车体外轮廓。
-      footprint: "[[0.33, 0.30], [0.33, -0.30], [-0.33, -0.30], [-0.33, 0.30]]"
+      footprint: "[[0.31, 0.30], [0.31, -0.30], [-0.33, -0.30], [-0.33, 0.30]]"
       footprint_padding: 0.02  # 在车体外再留一圈安全裕量。
       transform_tolerance: 0.15  # 增大可容忍时间戳轻微不齐，但可能掩盖 TF 延迟。
       plugins: ["obstacle_layer", "inflation_layer"]
@@ -445,4 +445,3 @@ local_costmap:  # 给局部控制提供实时避障约束，直接影响底盘�
         # 进一步缩小局部膨胀并提高衰减，让障碍代价不要在整块窗口里铺得太厚。
         cost_scaling_factor: 4.0  # 控制障碍代价衰减速度，越大越不容易贴障。
         inflation_radius: 0.20  # 控制障碍外扩到多大范围，越大越保守。
-

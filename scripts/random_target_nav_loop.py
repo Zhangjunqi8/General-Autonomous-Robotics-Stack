@@ -24,7 +24,7 @@ except ImportError:  # pragma: no cover - ROS 2 environments normally provide Py
     yaml = None
 
 
-DEFAULT_TARGETS = ["矿泉水区", "HOME", "补货备货仓"]
+DEFAULT_TARGETS = ["矿泉水区", "HOME", "补货备货仓", "收银台"]
 TERMINAL_STATES = {"succeeded", "failed", "canceled"}
 ACTIVE_STATES = {"waiting_for_nav2", "navigating", "canceling"}
 

@@ -3,6 +3,7 @@ project(hanmole_navigation)
 
 find_package(ament_cmake REQUIRED)
 find_package(ament_cmake_pytest REQUIRED)
+find_package(action_msgs REQUIRED)
 find_package(geometry_msgs REQUIRED)
 find_package(hanmole_msgs REQUIRED)
 find_package(lifecycle_msgs REQUIRED)
@@ -21,6 +22,7 @@ target_include_directories(target_repository PUBLIC include)
 target_link_libraries(target_repository yaml-cpp)
 
 set(navigation_node_dependencies
+  action_msgs
   geometry_msgs
   hanmole_msgs
   lifecycle_msgs

@@ -8,6 +8,8 @@
 #include <string>
 #include <utility>
 
+#include "action_msgs/msg/goal_status.hpp"
+#include "action_msgs/msg/goal_status_array.hpp"
 #include "geometry_msgs/msg/pose_with_covariance_stamped.hpp"
 #include "hanmole_msgs/srv/set_string.hpp"
 #include "hanmole_navigation/target_repository.hpp"
@@ -20,6 +22,7 @@
 #include "rclcpp/executors/multi_threaded_executor.hpp"
 #include "rclcpp/rclcpp.hpp"
 #include "rclcpp_action/rclcpp_action.hpp"
+#include "rclcpp_action/qos.hpp"
 #include "sensor_msgs/msg/laser_scan.hpp"
 #include "std_msgs/msg/string.hpp"
 #include "std_srvs/srv/trigger.hpp"
@@ -110,6 +113,8 @@ public:
   using ManageLifecycleNodes = nav2_msgs::srv::ManageLifecycleNodes;
   using SetString = hanmole_msgs::srv::SetString;
   using Trigger = std_srvs::srv::Trigger;
+  using GoalStatus = action_msgs::msg::GoalStatus;
+  using GoalStatusArray = action_msgs::msg::GoalStatusArray;
 
   Nav2TargetGatewayNode()
   : Node("nav2_target_gateway")
@@ -145,6 +150,8 @@ public:
       "bt_navigator_state_service", "/bt_navigator/get_state");
     navigate_action_name_ = declare_parameter<std::string>(
       "navigate_action_name", "/navigate_to_pose");
+    navigate_action_status_topic_ = declare_parameter<std::string>(
+      "navigate_action_status_topic", action_status_topic_for_action(navigate_action_name_));
     navigate_service_name_ = declare_parameter<std::string>(
       "navigate_service_name", "/hanmole/agv/navigate_to_pose");
     cancel_service_name_ = declare_parameter<std::string>(
@@ -282,6 +289,13 @@ public:
         handle_amcl_pose(*message);
       },
       subscription_options);
+    action_status_subscription_ = create_subscription<GoalStatusArray>(
+      navigate_action_status_topic_,
+      rclcpp_action::DefaultActionStatusQoS(),
+      [this](const GoalStatusArray::SharedPtr message) {
+        handle_action_status(*message);
+      },
+      subscription_options);
 
     navigate_service_ = create_service<SetString>(
       navigate_service_name_,
@@ -331,6 +345,14 @@ public:
   }
 
 private:
+  static std::string action_status_topic_for_action(const std::string & action_name)
+  {
+    if (action_name.empty()) {
+      return "/navigate_to_pose/_action/status";
+    }
+    return action_name + "/_action/status";
+  }
+
   void handle_amcl_pose(const geometry_msgs::msg::PoseWithCovarianceStamped & message)
   {
     std::lock_guard<std::mutex> lock(state_mutex_);
@@ -338,6 +360,72 @@ private:
       message.pose.pose.position.x,
       message.pose.pose.position.y);
     current_pose_yaw_ = yaw_from_quaternion(message.pose.pose.orientation);
+  }
+
+  void handle_action_status(const GoalStatusArray & message)
+  {
+    bool has_accepted = false;
+    bool has_canceling = false;
+    bool has_executing = false;
+    bool has_succeeded = false;
+    bool has_canceled = false;
+    bool has_failed = false;
+
+    for (const auto & status : message.status_list) {
+      switch (status.status) {
+        case GoalStatus::STATUS_ACCEPTED:
+          has_accepted = true;
+          break;
+        case GoalStatus::STATUS_EXECUTING:
+          has_executing = true;
+          break;
+        case GoalStatus::STATUS_CANCELING:
+          has_canceling = true;
+          break;
+        case GoalStatus::STATUS_SUCCEEDED:
+          has_succeeded = true;
+          break;
+        case GoalStatus::STATUS_CANCELED:
+          has_canceled = true;
+          break;
+        case GoalStatus::STATUS_ABORTED:
+          has_failed = true;
+          break;
+        default:
+          break;
+      }
+    }
+
+    if (has_executing) {
+      mark_action_status_active();
+      publish_action_state("navigating");
+      return;
+    }
+    if (has_canceling) {
+      mark_action_status_active();
+      publish_action_state("canceling");
+      return;
+    }
+    if (has_accepted) {
+      mark_action_status_active();
+      publish_action_state("waiting_for_nav2");
+      return;
+    }
+    if (has_succeeded) {
+      publish_action_terminal_state("succeeded");
+      return;
+    }
+    if (has_failed) {
+      publish_action_terminal_state("failed");
+      return;
+    }
+    if (has_canceled) {
+      publish_action_terminal_state("canceled");
+      return;
+    }
+
+    mark_action_status_inactive();
+    publish_action_state("idle");
   }
 
   void handle_navigate_request(
@@ -571,6 +659,44 @@ private:
   {
     publish_state(nav_status, target_state);
     publish_state("idle", "idle");
+  }
+
+  void mark_action_status_active()
+  {
+    std::lock_guard<std::mutex> lock(action_status_mutex_);
+    action_status_active_goal_ = true;
+  }
+
+  void mark_action_status_inactive()
+  {
+    std::lock_guard<std::mutex> lock(action_status_mutex_);
+    action_status_active_goal_ = false;
+  }
+
+  void publish_action_terminal_state(const std::string & nav_status)
+  {
+    bool should_publish_terminal = false;
+    {
+      std::lock_guard<std::mutex> lock(action_status_mutex_);
+      should_publish_terminal = action_status_active_goal_;
+      action_status_active_goal_ = false;
+    }
+
+    if (should_publish_terminal) {
+      publish_terminal_state(nav_status);
+      return;
+    }
+    publish_action_state("idle");
+  }
+
+  void publish_action_state(const std::string & nav_status)
+  {
+    std::string target_state = "idle";
+    if (nav_status != "idle") {
+      std::lock_guard<std::mutex> lock(published_state_mutex_);
+      target_state = last_target_state_;
+    }
+    publish_state(nav_status, target_state);
   }
 
   void publish_state(const std::string & nav_status, const std::string & target_state)
@@ -881,6 +1007,7 @@ private:
   std::string controller_server_state_service_;
   std::string bt_navigator_state_service_;
   std::string navigate_action_name_;
+  std::string navigate_action_status_topic_;
   std::string navigate_service_name_;
   std::string cancel_service_name_;
   std::string set_initial_pose_service_name_;
@@ -933,6 +1060,7 @@ private:
   rclcpp::Publisher<NavigateToPose::Impl::FeedbackMessage>::SharedPtr nav_feedback_publisher_;
   rclcpp::Publisher<std_msgs::msg::String>::SharedPtr target_state_publisher_;
   rclcpp::Publisher<geometry_msgs::msg::PoseWithCovarianceStamped>::SharedPtr initial_pose_publisher_;
+  rclcpp::Subscription<GoalStatusArray>::SharedPtr action_status_subscription_;
   rclcpp::Subscription<sensor_msgs::msg::LaserScan>::SharedPtr scan_subscription_;
   rclcpp::Subscription<nav_msgs::msg::Odometry>::SharedPtr odom_subscription_;
   rclcpp::Subscription<nav_msgs::msg::OccupancyGrid>::SharedPtr map_subscription_;
@@ -946,6 +1074,8 @@ private:
   std::mutex published_state_mutex_;
   std::string last_nav_status_{"idle"};
   std::string last_target_state_{"idle"};
+  std::mutex action_status_mutex_;
+  bool action_status_active_goal_{false};
 };
 
 }  // namespace

@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <iomanip>
 #include <limits>
 #include <sstream>
 #include <stdexcept>
@@ -194,6 +195,37 @@ std::string TargetRepository::catalog_json(const std::string & group) const
     stream << "\"" << escape_json_string(names[index]) << "\"";
   }
   stream << "]}";
+  return stream.str();
+}
+
+std::string TargetRepository::pose_list_json(const std::string & group) const
+{
+  std::ostringstream stream;
+  stream << std::setprecision(17);
+  stream << "{";
+
+  const auto group_it = target_groups_.find(group);
+  if (group_it != target_groups_.end()) {
+    bool first = true;
+    for (const auto & entry : group_it->second) {
+      if (entry.poses.empty()) {
+        continue;
+      }
+
+      const auto & pose = entry.poses.front();
+      if (!first) {
+        stream << ",";
+      }
+      first = false;
+
+      stream << "\"" << escape_json_string(entry.name) << "\":";
+      stream << "[";
+      stream << pose.x << "," << pose.y << "," << pose.yaw;
+      stream << "]";
+    }
+  }
+
+  stream << "}";
   return stream.str();
 }
 
