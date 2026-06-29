@@ -52,12 +52,20 @@ double yaw_from_quaternion(const geometry_msgs::msg::Quaternion & quaternion)
   return std::atan2(siny_cosp, cosy_cosp);
 }
 
-geometry_msgs::msg::Quaternion quaternion_from_yaw(double yaw)
+geometry_msgs::msg::Quaternion quaternion_from_target_pose(
+  const hanmole_navigation::TargetPose & pose)
 {
   geometry_msgs::msg::Quaternion quaternion;
-  quaternion.z = std::sin(yaw * 0.5);
-  quaternion.w = std::cos(yaw * 0.5);
+  quaternion.x = pose.qx;
+  quaternion.y = pose.qy;
+  quaternion.z = pose.qz;
+  quaternion.w = pose.qw;
   return quaternion;
+}
+
+double yaw_from_target_pose(const hanmole_navigation::TargetPose & pose)
+{
+  return yaw_from_quaternion(quaternion_from_target_pose(pose));
 }
 
 enum class StartupState
@@ -504,7 +512,8 @@ private:
       const double dx = target_pose->x - current_pose_xy->first;
       const double dy = target_pose->y - current_pose_xy->second;
       const double xy_error = std::hypot(dx, dy);
-      const double yaw_error = std::abs(normalize_angle(target_pose->yaw - *current_pose_yaw));
+      const double yaw_error = std::abs(
+        normalize_angle(yaw_from_target_pose(*target_pose) - *current_pose_yaw));
       if (xy_error <= goal_xy_tolerance_ && yaw_error <= goal_yaw_tolerance_) {
         publish_terminal_state("succeeded", target_name);
         result_message = "already at target: " + target_name;
@@ -524,7 +533,7 @@ private:
     goal.pose.header.frame_id = repository_.frame();
     goal.pose.pose.position.x = target_pose->x;
     goal.pose.pose.position.y = target_pose->y;
-    goal.pose.pose.orientation = quaternion_from_yaw(target_pose->yaw);
+    goal.pose.pose.orientation = quaternion_from_target_pose(*target_pose);
 
     auto options = typename rclcpp_action::Client<NavigateToPose>::SendGoalOptions();
     options.feedback_callback =
@@ -754,7 +763,7 @@ private:
     message.header.frame_id = repository_.frame();
     message.pose.pose.position.x = pose->x;
     message.pose.pose.position.y = pose->y;
-    message.pose.pose.orientation = quaternion_from_yaw(pose->yaw);
+    message.pose.pose.orientation = quaternion_from_target_pose(*pose);
     message.pose.covariance[0] = 0.25;
     message.pose.covariance[7] = 0.25;
     message.pose.covariance[35] = 0.0685;

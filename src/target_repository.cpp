@@ -18,14 +18,30 @@ namespace
 TargetPose parse_pose(const YAML::Node & node)
 {
   if (!node.IsMap()) {
-    throw std::runtime_error("target pose must be a map with x/y/yaw");
+    throw std::runtime_error("target pose must be a map with position/orientation");
+  }
+
+  const YAML::Node position = node["position"];
+  const YAML::Node orientation = node["orientation"];
+  if (!position || !position.IsMap() || !orientation || !orientation.IsMap()) {
+    throw std::runtime_error("target pose must contain position and orientation maps");
   }
 
   return TargetPose{
-    node["x"].as<double>(),
-    node["y"].as<double>(),
-    node["yaw"].as<double>(),
+    position["x"].as<double>(),
+    position["y"].as<double>(),
+    orientation["x"].as<double>(),
+    orientation["y"].as<double>(),
+    orientation["z"].as<double>(),
+    orientation["w"].as<double>(),
   };
+}
+
+double yaw_from_target_pose(const TargetPose & pose)
+{
+  const double siny_cosp = 2.0 * (pose.qw * pose.qz + pose.qx * pose.qy);
+  const double cosy_cosp = 1.0 - 2.0 * (pose.qy * pose.qy + pose.qz * pose.qz);
+  return std::atan2(siny_cosp, cosy_cosp);
 }
 
 std::string escape_json_string(const std::string & value)
@@ -220,7 +236,7 @@ std::string TargetRepository::pose_list_json(const std::string & group) const
 
       stream << "\"" << escape_json_string(entry.name) << "\":";
       stream << "[";
-      stream << pose.x << "," << pose.y << "," << pose.yaw;
+      stream << pose.x << "," << pose.y << "," << yaw_from_target_pose(pose);
       stream << "]";
     }
   }

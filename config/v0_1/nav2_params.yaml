@@ -99,16 +99,22 @@ controller_server:  # 把全局路径转换成实时速度命令。
     # 小于这些阈值的速度会被视为 0。
     # y 阈值设置得更大，相当于把很小的横移直接吞掉，避免残余侧移命令。
     min_x_velocity_threshold: 0.001  # 压掉极小前后速度，避免底盘低速抖动。
-    min_y_velocity_threshold: 0.001  # 压掉残余横移速度，保持非横移观感。
+    min_y_velocity_threshold: 0.01  # 压掉残余横移速度，保持非横移观感。
     min_theta_velocity_threshold: 0.001  # 压掉极小角速度，避免末端轻微抖动。
     failure_tolerance: 0.3  # 短暂控制异常不会立刻中断，持续失败才触发恢复。
     publish_errors: True
     storage_id: "sqlite3"
     odom_topic: "/odometry/filtered"
     cmd_vel_out_topic: "cmd_vel_nav"
+    progress_checker_plugins: ["progress_checker"]
     goal_checker_plugins: ["general_goal_checker"]
     controller_plugins: ["FollowPath"]
     use_realtime_priority: false
+
+    progress_checker:  # 防止机器人长时间卡住仍继续执行同一个导航任务。
+      plugin: "nav2_controller::SimpleProgressChecker"
+      required_movement_radius: 0.05  # 在允许时间内至少移动这么多，否则触发控制失败/恢复。
+      movement_time_allowance: 5.0  # 给低速接近和末端微调留足时间，避免过早恢复。
 
     general_goal_checker:  # 决定何时把当前位置和姿态判定为已到达目标。
       plugin: "nav2_controller::StoppedGoalChecker"
@@ -117,7 +123,7 @@ controller_server:  # 把全局路径转换成实时速度命令。
       stateful: true  # 保持到达判定连续，避免容差边缘来回跳变。
       # 进一步收紧终点判定：位置容差和姿态容差都更小。
       # 这样不会出现“XY 已到，但 yaw 还差不少就直接判定成功”的情况。
-      xy_goal_tolerance: 0.10  # 收紧后停靠位置更准，但更容易在目标附近反复调整。
+      xy_goal_tolerance: 0.20  # 收紧后停靠位置更准，但更容易在目标附近反复调整。
       yaw_goal_tolerance: 0.15  # 收紧后终点朝向更准，但对正时间更长。
       trans_stopped_velocity: 0.05  # 降低后必须更接近静止才算到达。
       rot_stopped_velocity: 0.05  # 降低后必须更接近停转才算到达。
@@ -130,16 +136,16 @@ controller_server:  # 把全局路径转换成实时速度命令。
       batch_size: 2000
 
       # 运动学采样方差（决定了轨迹搜索的动作幅度范围）
-      vx_std: 0.15
-      vy_std: 0.20
+      vx_std: 0.25
+      vy_std: 0.15
       wz_std: 0.20
 
       # 显式声明所有速度边界，匹配 smoother 参数，避免终端报警告
-      vx_max: 0.80
-      vx_min: -0.30
-      vy_max: 0.35
+      vx_max: 0.95
+      vx_min: -0.15
+      vy_max: 0.55
       vy_min: -0.35
-      wz_max: 1.0
+      wz_max: 1.2
       wz_min: -1.0
 
       use_polygon_footprint: true  # 使用真实车体轮廓进行碰撞检查，适合非圆形底盘。
@@ -192,7 +198,7 @@ controller_server:  # 把全局路径转换成实时速度命令。
       PreferForwardCritic:
         enabled: true
         cost_power: 1
-        cost_weight: 1.0      # 注释：设为极低！取消对非横移运动的偏好，彻底释放麦轮螃蟹步天赋
+        cost_weight: 15.0      # 注释：设为极低！取消对非横移运动的偏好，彻底释放麦轮螃蟹步天赋
 
 planner_server:  # 生成从当前位置到目标点的全局路径。
   ros__parameters:
@@ -265,13 +271,13 @@ velocity_smoother:  # 限制速度突变，让最终速度输出更平顺。
     enable_stamped_cmd_vel: True
     cmd_vel_in_topic: "cmd_vel_nav"
     cmd_vel_out_topic: "cmd_vel_smoothed"
-    max_velocity: [0.80, 0.35, 1.0]  # 限制最高线速度和角速度，防止控制命令过激。
-    min_velocity: [-0.40, -0.35, -1.0]  # 限制最小速度，保留必要的倒退和反向转动能力。
+    max_velocity: [0.95, 0.55, 1.4]  # 限制最高线速度和角速度，防止控制命令过激。
+    min_velocity: [-0.15, -0.35, -1.0]  # 限制最小速度，保留必要的倒退和反向转动能力。
     max_accel: [0.5, 0.3, 1.0]  # 限制加速度，减少起停冲击和轨迹抖动。
     max_decel: [-1.5, -0.6, -2.0]  # 限制减速度，避免刹停过猛。
     odom_topic: "/odometry/filtered"
     odom_duration: 0.1  # 用更短时间窗估计速度，响应更快但更敏感。
-    deadband_velocity: [0.0, 0.001, 0.001]  # 压掉很小的残余速度，减少末端抖动。
+    deadband_velocity: [0.0, 0.01, 0.001]  # 压掉很小的残余速度，减少末端抖动。
     velocity_timeout: 1.0  # 超过这个时间没有新命令就认为速度失效并衰减。
 
 waypoint_follower:  # 按航点顺序执行多点任务。
@@ -318,7 +324,7 @@ collision_monitor:  # 在最终出速度前做碰撞裁决，必要时停车或�
       type: "polygon"
       points: "[[0.31, 0.30], [0.31, -0.30], [-0.33, -0.30], [-0.33, 0.30]]"
       action_type: "stop"
-      min_points: 1  # 需要更多障碍点才触发，减少误减速。
+      min_points: 8  # 需要更多障碍点才触发，减少误减速。
       visualize: true
       polygon_pub_topic: "footprint_stop_polygon"
       enabled: false
@@ -395,7 +401,7 @@ global_costmap:  # 给全局规划提供绕障约束，决定全局路径如何�
       inflation_layer:  # 把障碍外扩成安全缓冲区。
         plugin: "nav2_costmap_2d::InflationLayer"
         # 全局膨胀半径稍大一些，绕障余量。
-        cost_scaling_factor: 2.0  # 控制障碍代价衰减速度，越大越不容易贴障。
+        cost_scaling_factor: 4.0  # 控制障碍代价衰减速度，越大越不容易贴障。
         inflation_radius: 0.60  # 控制障碍外扩到多大范围，越大越保守。
 
 local_costmap:  # 给局部控制提供实时避障约束，直接影响底盘是否敢继续走。
@@ -443,5 +449,5 @@ local_costmap:  # 给局部控制提供实时避障约束，直接影响底盘�
       inflation_layer:  # 把障碍外扩成安全缓冲区。
         plugin: "nav2_costmap_2d::InflationLayer"
         # 进一步缩小局部膨胀并提高衰减，让障碍代价不要在整块窗口里铺得太厚。
-        cost_scaling_factor: 4.0  # 控制障碍代价衰减速度，越大越不容易贴障。
-        inflation_radius: 0.20  # 控制障碍外扩到多大范围，越大越保守。
+        cost_scaling_factor: 2.0  # 控制障碍代价衰减速度，越大越不容易贴障。
+        inflation_radius: 0.80  # 控制障碍外扩到多大范围，越大越保守。
