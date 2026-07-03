@@ -131,9 +131,10 @@ controller_server:  # 把全局路径转换成实时速度命令。
     FollowPath:  # 控制底盘沿全局路径运动，并在局部障碍前实时调整轨迹。
       # 支持全向底盘的 MPPI 算法配置
       plugin: "nav2_mppi_controller::MPPIController"
-      time_steps: 56
+      time_steps: 70
       model_dt: 0.05
       batch_size: 2000
+      prune_distance: 3.5
 
       # 运动学采样方差（决定了轨迹搜索的动作幅度范围）
       vx_std: 0.25
@@ -178,11 +179,11 @@ controller_server:  # 把全局路径转换成实时速度命令。
       GoalCritic:
         enabled: true
         cost_power: 1
-        cost_weight: 8.0      # 趋向目标的绝对位置权重
+        cost_weight: 10.0      # 趋向目标的绝对位置权重
       GoalAngleCritic:
         enabled: true
         cost_power: 1
-        cost_weight: 5.0      # 终点姿态对齐权重
+        cost_weight: 8.0      # 终点姿态对齐权重
       PathAlignCritic:
         enabled: true
         cost_power: 1
@@ -190,11 +191,11 @@ controller_server:  # 把全局路径转换成实时速度命令。
       PathFollowCritic:
         enabled: true
         cost_power: 1
-        cost_weight: 15.0     # 顺着路径方向移动的权重
+        cost_weight: 6.0     # 顺着路径方向移动的权重
       PathAngleCritic:
         enabled: true
         cost_power: 1
-        cost_weight: 3.0      # 注释：设为极低！允许车头不强求对齐路径方向，实现斜向移动绕开障碍
+        cost_weight: 8.0      # 注释：设为极低！允许车头不强求对齐路径方向，实现斜向移动绕开障碍
       PreferForwardCritic:
         enabled: true
         cost_power: 1
@@ -273,8 +274,8 @@ velocity_smoother:  # 限制速度突变，让最终速度输出更平顺。
     cmd_vel_out_topic: "cmd_vel_smoothed"
     max_velocity: [0.95, 0.55, 1.4]  # 限制最高线速度和角速度，防止控制命令过激。
     min_velocity: [-0.15, -0.35, -1.0]  # 限制最小速度，保留必要的倒退和反向转动能力。
-    max_accel: [0.5, 0.3, 1.0]  # 限制加速度，减少起停冲击和轨迹抖动。
-    max_decel: [-1.5, -0.6, -2.0]  # 限制减速度，避免刹停过猛。
+    max_accel: [0.8, 0.3, 1.0]  # 限制加速度，减少起停冲击和轨迹抖动。
+    max_decel: [-3.5, -0.6, -2.0]  # 限制减速度，避免刹停过猛。
     odom_topic: "/odometry/filtered"
     odom_duration: 0.1  # 用更短时间窗估计速度，响应更快但更敏感。
     deadband_velocity: [0.0, 0.01, 0.001]  # 压掉很小的残余速度，减少末端抖动。
@@ -297,6 +298,68 @@ route_server:  # 预留路线级能力扩展，目前只保留最小配置。
   ros__parameters:
     # route_server 目前仅保留基础配置，供后续路线级能力扩展。
     use_sim_time: False
+
+# docking_server:  # 自动回充/充电桩对接 server，提供 /dock_robot 与 /undock_robot action。
+#   ros__parameters:
+#     # 这组参数按 Nav2 Jazzy 官方 docking_server 配置编写，并适配本车 base_footprint。
+#     use_sim_time: False
+#     controller_frequency: 50.0  # 最后低速对接控制频率，越高越平滑但 CPU 更高。
+#     initial_perception_timeout: 5.0  # 等待外部桩位识别的初始超时；固定桩位时影响很小。
+#     wait_charge_timeout: 5.0  # 对接完成后等待充电状态反馈的最长时间。
+#     dock_approach_timeout: 30.0  # 最后慢速靠桩阶段的最长持续时间。
+#     undock_linear_tolerance: 0.05  # 退桩到预停点的位置容差。
+#     undock_angular_tolerance: 0.1  # 退桩到预停点的角度容差。
+#     max_retries: 3  # 对接失败后的最大重试次数。
+#     base_frame: "base_footprint"
+#     fixed_frame: "odom"  # 最后对接用 odom，避免 map 定位跳变影响近距离控制。
+#     dock_backwards: false  # 车头进桩保持 false；若后部触点进桩改为 true。
+#     dock_prestaging_tolerance: 0.4  # 离预停点多近时进入最后对接阶段。
+
+#     dock_plugins: ["simple_charging_dock"]
+
+#     simple_charging_dock:
+#       plugin: "opennav_docking::SimpleChargingDock"
+#       docking_threshold: 0.05  # 未启用电池/堵转检测时，离桩多近判定为已 dock。
+#       staging_x_offset: -0.7  # 预停点在桩前方的距离，空间小可调到 -0.5。
+#       staging_yaw_offset: 0.0  # 预停点相对桩朝向的偏移。
+#       use_external_detection_pose: false  # 暂不使用 AprilTag/视觉桩位识别，先按地图固定桩位对接。
+#       use_battery_status: false  # 暂不依赖 /battery_state 电流判断，先用距离判定。
+#       use_stall_detection: false  # 暂不依赖轮子堵转判断。
+#       external_detection_timeout: 1.0
+#       external_detection_translation_x: -0.18
+#       external_detection_translation_y: 0.0
+#       external_detection_rotation_roll: -1.57
+#       external_detection_rotation_pitch: -1.57
+#       external_detection_rotation_yaw: 0.0
+#       filter_coef: 0.1
+#       charging_threshold: 0.5
+#       stall_joint_names: []
+#       stall_velocity_threshold: 1.0
+#       stall_effort_threshold: 1.0
+
+#     docks: ["home_dock"]
+
+#     home_dock:
+#       type: "simple_charging_dock"
+#       frame: map
+#       pose: [0.0, 0.0, 0.0]  # 现场标定后改成真实充电桩 [x, y, yaw]。
+
+#     controller:
+#       k_phi: 3.0  # 朝向修正增益，末端左右摆动时可降到 2.0-2.5。
+#       k_delta: 2.0  # 目标收敛增益，收敛慢可升到 2.5。
+#       beta: 0.4
+#       lambda: 2.0
+#       v_linear_min: 0.06  # 最后靠桩最小线速度，过低不动时微增。
+#       v_linear_max: 0.10  # 最后靠桩最大线速度，真车先保守低速。
+#       v_angular_max: 0.50  # 最大角速度，末端甩头时降低。
+#       slowdown_radius: 0.25  # 离目标多远开始减速。
+#       use_collision_detection: true
+#       costmap_topic: "local_costmap/costmap_raw"
+#       footprint_topic: "local_costmap/published_footprint"
+#       transform_tolerance: 0.1
+#       projection_time: 5.0
+#       simulation_time_step: 0.1  # Jazzy 源码读取 simulation_time_step，不是 simulation_step。
+#       dock_collision_threshold: 0.4  # 靠近桩末段跳过碰撞检查，避免充电桩本体挡住最后对接。
 
 collision_monitor:  # 在最终出速度前做碰撞裁决，必要时停车或减速。
   ros__parameters:
@@ -416,8 +479,8 @@ local_costmap:  # 给局部控制提供实时避障约束，直接影响底盘�
       global_frame: odom
       robot_base_frame: base_footprint
       rolling_window: true
-      width: 3  # 控制局部窗口大小，越大看得越远但越保守。
-      height: 3  # 控制局部窗口大小，越大看得越远但越保守。
+      width: 5  # 控制局部窗口大小，越大看得越远但越保守。
+      height: 5  # 控制局部窗口大小，越大看得越远但越保守。
       resolution: 0.05  # 控制代价地图分辨率，越小越精细但越耗算力。
       # 局部代价地图必须和全局代价地图使用同一套真实车体外轮廓。
       footprint: "[[0.31, 0.30], [0.31, -0.30], [-0.33, -0.30], [-0.33, 0.30]]"
@@ -442,12 +505,12 @@ local_costmap:  # 给局部控制提供实时避障约束，直接影响底盘�
           # 去掉局部障碍残留，避免 RViz 中“实物已离开但代价还挂着”的假障碍。
           observation_persistence: 0.0  # 延长障碍保留时间，能抑制短暂误检，但地图会更“黏”。
           obstacle_min_range: 0.0  # 控制障碍写入从多近开始生效。
-          obstacle_max_range: 2.0  # 控制障碍写入能影响多远的距离。
+          obstacle_max_range: 12.0  # 控制障碍写入能影响多远的距离。
           raytrace_min_range: 0.0  # 控制清除射线从多近开始生效。
           raytrace_max_range: 2.5  # 控制清除射线能清掉多远的障碍。
 
       inflation_layer:  # 把障碍外扩成安全缓冲区。
         plugin: "nav2_costmap_2d::InflationLayer"
         # 进一步缩小局部膨胀并提高衰减，让障碍代价不要在整块窗口里铺得太厚。
-        cost_scaling_factor: 2.0  # 控制障碍代价衰减速度，越大越不容易贴障。
+        cost_scaling_factor: 3.0  # 控制障碍代价衰减速度，越大越不容易贴障。
         inflation_radius: 0.80  # 控制障碍外扩到多大范围，越大越保守。

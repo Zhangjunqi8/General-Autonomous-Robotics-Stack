@@ -50,6 +50,7 @@ def _navigation_lifecycle_nodes() -> list[str]:
         'collision_monitor',
         'bt_navigator',
         'waypoint_follower',
+        # 'docking_server',
     ]
 
 
@@ -180,6 +181,17 @@ def _create_navigation_node_actions(configured_params, use_sim_time, use_respawn
                 arguments=['--ros-args', '--log-level', log_level],
                 remappings=remappings,
             ),
+            # Node(
+            #     package='opennav_docking',
+            #     executable='opennav_docking',
+            #     name='docking_server',
+            #     output='screen',
+            #     respawn=use_respawn,
+            #     respawn_delay=2.0,
+            #     parameters=[configured_params],
+            #     arguments=['--ros-args', '--log-level', log_level],
+            #     remappings=remappings + [('cmd_vel', 'cmd_vel_nav')],
+            # ),
             Node(
                 package='nav2_lifecycle_manager',
                 executable='lifecycle_manager',
@@ -260,6 +272,13 @@ def _create_navigation_composable_actions(
             parameters=[configured_params],
             remappings=remappings,
         ),
+        # ComposableNode(
+        #     package='opennav_docking',
+        #     plugin='opennav_docking::DockingServer',
+        #     name='docking_server',
+        #     parameters=[configured_params],
+        #     remappings=remappings + [('cmd_vel', 'cmd_vel_nav')],
+        # ),
             ComposableNode(
                 package='nav2_lifecycle_manager',
                 plugin='nav2_lifecycle_manager::LifecycleManager',
