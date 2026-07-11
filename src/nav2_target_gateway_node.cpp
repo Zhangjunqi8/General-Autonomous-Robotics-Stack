@@ -15,16 +15,21 @@
 #include "hanmole_navigation/target_repository.hpp"
 #include "lifecycle_msgs/msg/state.hpp"
 #include "lifecycle_msgs/srv/get_state.hpp"
+#include "nav2_msgs/action/follow_path.hpp"
 #include "nav2_msgs/action/navigate_to_pose.hpp"
 #include "nav2_msgs/srv/manage_lifecycle_nodes.hpp"
 #include "nav_msgs/msg/occupancy_grid.hpp"
 #include "nav_msgs/msg/odometry.hpp"
+#include "nav_msgs/msg/path.hpp"
+#include "rcl_interfaces/msg/parameter_type.hpp"
+#include "rcl_interfaces/srv/set_parameters.hpp"
 #include "rclcpp/executors/multi_threaded_executor.hpp"
 #include "rclcpp/rclcpp.hpp"
 #include "rclcpp_action/rclcpp_action.hpp"
 #include "rclcpp_action/qos.hpp"
 #include "sensor_msgs/msg/laser_scan.hpp"
 #include "std_msgs/msg/string.hpp"
+#include "nav2_msgs/srv/toggle.hpp"
 #include "std_srvs/srv/trigger.hpp"
 #include "tf2/exceptions.h"
 #include "tf2_ros/buffer.h"
@@ -83,6 +88,14 @@ enum class StartupState
   Error,
 };
 
+enum class DockState
+{
+  Free,
+  Docking,
+  Docked,
+  Undocking,
+};
+
 const char * startup_state_name(StartupState state)
 {
   switch (state) {
@@ -112,14 +125,33 @@ const char * startup_state_name(StartupState state)
   return "error";
 }
 
+const char * dock_state_name(DockState state)
+{
+  switch (state) {
+    case DockState::Free:
+      return "free";
+    case DockState::Docking:
+      return "docking";
+    case DockState::Docked:
+      return "docked";
+    case DockState::Undocking:
+      return "undocking";
+  }
+  return "free";
+}
+
 class Nav2TargetGatewayNode : public rclcpp::Node
 {
 public:
   using NavigateToPose = nav2_msgs::action::NavigateToPose;
   using GoalHandleNavigateToPose = rclcpp_action::ClientGoalHandle<NavigateToPose>;
+  using FollowPath = nav2_msgs::action::FollowPath;
+  using GoalHandleFollowPath = rclcpp_action::ClientGoalHandle<FollowPath>;
   using GetState = lifecycle_msgs::srv::GetState;
   using ManageLifecycleNodes = nav2_msgs::srv::ManageLifecycleNodes;
+  using SetParameters = rcl_interfaces::srv::SetParameters;
   using SetString = hanmole_msgs::srv::SetString;
+  using Toggle = nav2_msgs::srv::Toggle;
   using Trigger = std_srvs::srv::Trigger;
   using GoalStatus = action_msgs::msg::GoalStatus;
   using GoalStatusArray = action_msgs::msg::GoalStatusArray;
@@ -164,6 +196,10 @@ public:
       "navigate_service_name", "/hanmole/agv/navigate_to_pose");
     cancel_service_name_ = declare_parameter<std::string>(
       "cancel_service_name", "/hanmole/agv/navigate_cancel");
+    auto_dock_service_name_ = declare_parameter<std::string>(
+      "auto_dock_service_name", "/hanmole/agv/auto_dock");
+    undock_service_name_ = declare_parameter<std::string>(
+      "undock_service_name", "/hanmole/agv/undock");
     set_initial_pose_service_name_ = declare_parameter<std::string>(
       "set_initial_pose_service_name", "/hanmole/agv/set_initial_pose");
     nav_status_topic_ = declare_parameter<std::string>("nav_status_topic", "/nav_status");
@@ -171,8 +207,32 @@ public:
       "nav_feedback_topic", "/hanmole/agv/nav_feedback");
     target_state_topic_ = declare_parameter<std::string>(
       "target_state_topic", "/hanmole_navigation/target_state");
+    dock_state_topic_ = declare_parameter<std::string>(
+      "dock_state_topic", "/hanmole_navigation/dock_state");
     initial_pose_topic_ = declare_parameter<std::string>("initial_pose_topic", "/initialpose");
+    follow_path_action_name_ = declare_parameter<std::string>(
+      "follow_path_action_name", "/follow_path");
+    collision_monitor_toggle_service_ = declare_parameter<std::string>(
+      "collision_monitor_toggle_service", "/collision_monitor/toggle");
+    controller_parameters_service_ = declare_parameter<std::string>(
+      "controller_parameters_service", "/controller_server/set_parameters");
+    dock_staging_target_ = declare_parameter<std::string>("dock_staging_target", "DOCK_STAGING");
+    dock_charge_target_ = declare_parameter<std::string>("dock_charge_target", "DOCK_CHARGE");
+    docking_controller_id_ = declare_parameter<std::string>("docking_controller_id", "DockMppi");
+    docking_goal_checker_id_ = declare_parameter<std::string>(
+      "docking_goal_checker_id", "dock_goal_checker");
+    docking_progress_checker_id_ = declare_parameter<std::string>(
+      "docking_progress_checker_id", "progress_checker");
+    normal_goal_checker_xy_tolerance_ = declare_parameter<double>(
+      "normal_goal_checker_xy_tolerance", 0.20);
+    normal_goal_checker_yaw_tolerance_ = declare_parameter<double>(
+      "normal_goal_checker_yaw_tolerance", 0.15);
+    dock_goal_checker_xy_tolerance_ = declare_parameter<double>(
+      "dock_goal_checker_xy_tolerance", 0.03);
+    dock_goal_checker_yaw_tolerance_ = declare_parameter<double>(
+      "dock_goal_checker_yaw_tolerance", 0.05235987755982989);
     const int action_timeout_ms = declare_parameter<int>("action_timeout_ms", 3000);
+    const int dock_motion_timeout_ms = declare_parameter<int>("dock_motion_timeout_ms", 30000);
     const int startup_delay_ms = declare_parameter<int>("startup_delay_ms", 3000);
     const int input_freshness_timeout_ms = declare_parameter<int>(
       "input_freshness_timeout_ms", 500);
@@ -207,6 +267,7 @@ public:
     }
 
     action_wait_timeout_ = std::chrono::milliseconds(action_timeout_ms);
+    dock_motion_timeout_ = std::chrono::milliseconds(dock_motion_timeout_ms);
     startup_delay_ = std::chrono::milliseconds(startup_delay_ms);
     input_freshness_timeout_ = std::chrono::milliseconds(input_freshness_timeout_ms);
     startup_poll_period_ = std::chrono::milliseconds(startup_poll_period_ms);
@@ -220,6 +281,18 @@ public:
     action_client_ = rclcpp_action::create_client<NavigateToPose>(
       this,
       navigate_action_name_,
+      callback_group_);
+    follow_path_client_ = rclcpp_action::create_client<FollowPath>(
+      this,
+      follow_path_action_name_,
+      callback_group_);
+    collision_toggle_client_ = create_client<Toggle>(
+      collision_monitor_toggle_service_,
+      rclcpp::ServicesQoS(),
+      callback_group_);
+    controller_parameters_client_ = create_client<SetParameters>(
+      controller_parameters_service_,
+      rclcpp::ServicesQoS(),
       callback_group_);
     localization_manager_client_ = create_client<ManageLifecycleNodes>(
       localization_manager_service_,
@@ -256,6 +329,7 @@ public:
       nav_feedback_topic_,
       rclcpp::QoS(10).reliable());
     target_state_publisher_ = create_publisher<std_msgs::msg::String>(target_state_topic_, state_qos);
+    dock_state_publisher_ = create_publisher<std_msgs::msg::String>(dock_state_topic_, state_qos);
     initial_pose_publisher_ = create_publisher<geometry_msgs::msg::PoseWithCovarianceStamped>(
       initial_pose_topic_,
       rclcpp::QoS(1).transient_local().reliable());
@@ -326,6 +400,27 @@ public:
       },
       rclcpp::ServicesQoS(),
       callback_group_);
+    auto_dock_service_ = create_service<SetString>(
+      auto_dock_service_name_,
+      [this](
+        const std::shared_ptr<SetString::Request> request,
+        std::shared_ptr<SetString::Response> response)
+      {
+        handle_auto_dock_request(request, response);
+      },
+      rclcpp::ServicesQoS(),
+      callback_group_);
+    undock_service_ = create_service<Trigger>(
+      undock_service_name_,
+      [this](
+        const std::shared_ptr<Trigger::Request> request,
+        std::shared_ptr<Trigger::Response> response)
+      {
+        (void)request;
+        handle_undock_request(response);
+      },
+      rclcpp::ServicesQoS(),
+      callback_group_);
     set_initial_pose_service_ = create_service<Trigger>(
       set_initial_pose_service_name_,
       [this](
@@ -344,6 +439,7 @@ public:
       callback_group_);
 
     publish_state("idle", "idle");
+    publish_dock_state();
     RCLCPP_INFO(
       get_logger(),
       "startup orchestration waiting for %s and %s in %s mode",
@@ -485,6 +581,18 @@ private:
       return;
     }
 
+    std::unique_lock<std::mutex> operation_lock(operation_mutex_, std::try_to_lock);
+    if (!operation_lock.owns_lock()) {
+      response->success = false;
+      response->result = "navigation operation already in progress";
+      return;
+    }
+
+    if (!leave_dock_if_needed(response->result)) {
+      response->success = false;
+      return;
+    }
+
     response->success = start_navigation_to_target(request->data, response->result);
   }
 
@@ -603,6 +711,115 @@ private:
     response->message = "cancel requested";
   }
 
+  void handle_auto_dock_request(
+    const std::shared_ptr<SetString::Request> request,
+    std::shared_ptr<SetString::Response> response)
+  {
+    (void)request;
+    std::unique_lock<std::mutex> operation_lock(operation_mutex_, std::try_to_lock);
+    if (!operation_lock.owns_lock()) {
+      response->success = false;
+      response->result = "navigation operation already in progress";
+      return;
+    }
+
+    {
+      std::lock_guard<std::mutex> lock(state_mutex_);
+      if (!navigation_ready_) {
+        response->success = false;
+        response->result = "navigation stack not ready";
+        return;
+      }
+      if (active_goal_handle_) {
+        response->success = false;
+        response->result = "cannot dock while a navigation goal is active";
+        return;
+      }
+      if (dock_state_ == DockState::Docked) {
+        response->success = true;
+        response->result = "already docked";
+        return;
+      }
+    }
+
+    set_dock_state(DockState::Docking);
+    if (!set_controller_goal_checker_tolerances(
+        dock_goal_checker_xy_tolerance_, dock_goal_checker_yaw_tolerance_, response->result))
+    {
+      set_dock_state(DockState::Free);
+      response->success = false;
+      return;
+    }
+
+    if (!set_collision_monitor_enabled(false, response->result)) {
+      std::string cleanup_message;
+      set_controller_goal_checker_tolerances(
+        normal_goal_checker_xy_tolerance_, normal_goal_checker_yaw_tolerance_, cleanup_message);
+      set_dock_state(DockState::Free);
+      response->success = false;
+      return;
+    }
+
+    publish_state("docking_to_staging", dock_staging_target_);
+    if (!run_navigation_to_target_blocking(dock_staging_target_, response->result)) {
+      const std::string failure_message = response->result;
+      std::string cleanup_message;
+      set_dock_state(DockState::Free);
+      set_controller_goal_checker_tolerances(
+        normal_goal_checker_xy_tolerance_, normal_goal_checker_yaw_tolerance_, cleanup_message);
+      set_collision_monitor_enabled(true, cleanup_message);
+      response->result = failure_message;
+      response->success = false;
+      return;
+    }
+
+    geometry_msgs::msg::PoseStamped charge_pose;
+    if (!resolve_target_pose(dock_charge_target_, charge_pose, response->result)) {
+      const std::string failure_message = response->result;
+      std::string cleanup_message;
+      set_dock_state(DockState::Free);
+      set_controller_goal_checker_tolerances(
+        normal_goal_checker_xy_tolerance_, normal_goal_checker_yaw_tolerance_, cleanup_message);
+      set_collision_monitor_enabled(true, cleanup_message);
+      response->result = failure_message;
+      response->success = false;
+      return;
+    }
+
+    publish_state("docking_approach", dock_charge_target_);
+    if (!follow_path_to_pose_blocking(charge_pose, response->result)) {
+      const std::string failure_message = response->result;
+      std::string cleanup_message;
+      set_dock_state(DockState::Free);
+      set_controller_goal_checker_tolerances(
+        normal_goal_checker_xy_tolerance_, normal_goal_checker_yaw_tolerance_, cleanup_message);
+      set_collision_monitor_enabled(true, cleanup_message);
+      response->result = failure_message;
+      response->success = false;
+      return;
+    }
+
+    set_dock_state(DockState::Docked);
+    publish_state("docked", dock_charge_target_);
+    response->success = true;
+    response->result = "docked at target: " + dock_charge_target_;
+  }
+
+  void handle_undock_request(std::shared_ptr<Trigger::Response> response)
+  {
+    std::unique_lock<std::mutex> operation_lock(operation_mutex_, std::try_to_lock);
+    if (!operation_lock.owns_lock()) {
+      response->success = false;
+      response->message = "navigation operation already in progress";
+      return;
+    }
+
+    response->success = leave_dock_if_needed(response->message);
+    if (response->success && response->message.empty()) {
+      response->message = "robot is not docked";
+    }
+  }
+
   void handle_set_initial_pose_request(std::shared_ptr<Trigger::Response> response)
   {
     if (!publish_initial_pose_internal()) {
@@ -613,6 +830,334 @@ private:
 
     response->success = true;
     response->message = "published initial pose: " + repository_.initial_pose_target();
+  }
+
+  bool leave_dock_if_needed(std::string & result_message)
+  {
+    {
+      std::lock_guard<std::mutex> lock(state_mutex_);
+      if (dock_state_ != DockState::Docked) {
+        return true;
+      }
+    }
+
+    set_dock_state(DockState::Undocking);
+    publish_state("undocking_to_staging", dock_staging_target_);
+
+    if (!set_collision_monitor_enabled(false, result_message)) {
+      set_dock_state(DockState::Docked);
+      return false;
+    }
+
+    geometry_msgs::msg::PoseStamped staging_pose;
+    if (!resolve_target_pose(dock_staging_target_, staging_pose, result_message)) {
+      set_dock_state(DockState::Docked);
+      return false;
+    }
+
+    if (!follow_path_to_pose_blocking(staging_pose, result_message)) {
+      set_dock_state(DockState::Docked);
+      return false;
+    }
+
+    if (!set_controller_goal_checker_tolerances(
+        normal_goal_checker_xy_tolerance_, normal_goal_checker_yaw_tolerance_, result_message))
+    {
+      set_dock_state(DockState::Free);
+      return false;
+    }
+
+    if (!set_collision_monitor_enabled(true, result_message)) {
+      set_dock_state(DockState::Free);
+      return false;
+    }
+
+    set_dock_state(DockState::Free);
+    publish_state("idle", "idle");
+    result_message = "undocked to staging: " + dock_staging_target_;
+    return true;
+  }
+
+  bool run_navigation_to_target_blocking(
+    const std::string & target_name,
+    std::string & result_message)
+  {
+    std::optional<std::pair<double, double>> current_pose_xy;
+    std::optional<double> current_pose_yaw;
+    {
+      std::lock_guard<std::mutex> lock(state_mutex_);
+      if (!navigation_ready_) {
+        result_message = "navigation stack not ready";
+        return false;
+      }
+      current_pose_xy = current_pose_xy_;
+      current_pose_yaw = current_pose_yaw_;
+    }
+
+    const auto target_pose = repository_.resolve_target(target_group_, target_name, current_pose_xy);
+    if (!target_pose.has_value()) {
+      result_message = "target not found: " + target_name;
+      return false;
+    }
+
+    if (current_pose_xy.has_value() && current_pose_yaw.has_value()) {
+      const double dx = target_pose->x - current_pose_xy->first;
+      const double dy = target_pose->y - current_pose_xy->second;
+      const double xy_error = std::hypot(dx, dy);
+      const double yaw_error = std::abs(
+        normalize_angle(yaw_from_target_pose(*target_pose) - *current_pose_yaw));
+      if (xy_error <= goal_xy_tolerance_ && yaw_error <= goal_yaw_tolerance_) {
+        result_message = "already at target: " + target_name;
+        return true;
+      }
+    }
+
+    if (!action_client_->wait_for_action_server(action_wait_timeout_)) {
+      result_message = "navigate_to_pose action server is unavailable";
+      return false;
+    }
+
+    NavigateToPose::Goal goal;
+    goal.pose = target_pose_stamped(*target_pose);
+
+    auto options = typename rclcpp_action::Client<NavigateToPose>::SendGoalOptions();
+    options.feedback_callback =
+      [this](
+        GoalHandleNavigateToPose::SharedPtr goal_handle,
+        const std::shared_ptr<const NavigateToPose::Feedback> feedback)
+      {
+        NavigateToPose::Impl::FeedbackMessage feedback_message;
+        feedback_message.goal_id.uuid = goal_handle->get_goal_id();
+        feedback_message.feedback = *feedback;
+        nav_feedback_publisher_->publish(feedback_message);
+      };
+
+    auto future = action_client_->async_send_goal(goal, options);
+    if (future.wait_for(action_wait_timeout_) != std::future_status::ready) {
+      result_message = "timed out waiting for staging goal acceptance";
+      return false;
+    }
+
+    auto goal_handle = future.get();
+    if (!goal_handle) {
+      result_message = "staging goal rejected by action server";
+      return false;
+    }
+
+    {
+      std::lock_guard<std::mutex> lock(state_mutex_);
+      active_goal_handle_ = goal_handle;
+      active_target_name_ = target_name;
+    }
+
+    auto result_future = action_client_->async_get_result(goal_handle);
+    if (result_future.wait_for(dock_motion_timeout_) != std::future_status::ready) {
+      action_client_->async_cancel_goal(goal_handle);
+      clear_active_goal();
+      result_message = "timed out navigating to staging target: " + target_name;
+      return false;
+    }
+
+    const auto result = result_future.get();
+    clear_active_goal();
+    if (result.code == rclcpp_action::ResultCode::SUCCEEDED &&
+      result.result->error_code == NavigateToPose::Result::NONE)
+    {
+      result_message = "reached target: " + target_name;
+      return true;
+    }
+
+    result_message = "failed to reach target: " + target_name;
+    return false;
+  }
+
+  bool resolve_target_pose(
+    const std::string & target_name,
+    geometry_msgs::msg::PoseStamped & pose,
+    std::string & result_message)
+  {
+    std::optional<std::pair<double, double>> current_pose_xy;
+    {
+      std::lock_guard<std::mutex> lock(state_mutex_);
+      current_pose_xy = current_pose_xy_;
+    }
+
+    const auto target_pose = repository_.resolve_target(target_group_, target_name, current_pose_xy);
+    if (!target_pose.has_value()) {
+      result_message = "target not found: " + target_name;
+      return false;
+    }
+
+    pose = target_pose_stamped(*target_pose);
+    return true;
+  }
+
+  geometry_msgs::msg::PoseStamped target_pose_stamped(
+    const hanmole_navigation::TargetPose & target_pose)
+  {
+    geometry_msgs::msg::PoseStamped pose;
+    pose.header.stamp = now();
+    pose.header.frame_id = repository_.frame();
+    pose.pose.position.x = target_pose.x;
+    pose.pose.position.y = target_pose.y;
+    pose.pose.orientation = quaternion_from_target_pose(target_pose);
+    return pose;
+  }
+
+  nav_msgs::msg::Path make_short_path_to_pose(const geometry_msgs::msg::PoseStamped & target_pose)
+  {
+    nav_msgs::msg::Path path;
+    path.header.stamp = now();
+    path.header.frame_id = target_pose.header.frame_id;
+
+    std::optional<std::pair<double, double>> current_pose_xy;
+    std::optional<double> current_pose_yaw;
+    {
+      std::lock_guard<std::mutex> lock(state_mutex_);
+      current_pose_xy = current_pose_xy_;
+      current_pose_yaw = current_pose_yaw_;
+    }
+
+    if (current_pose_xy.has_value()) {
+      geometry_msgs::msg::PoseStamped current_pose;
+      current_pose.header = path.header;
+      current_pose.pose.position.x = current_pose_xy->first;
+      current_pose.pose.position.y = current_pose_xy->second;
+      if (current_pose_yaw.has_value()) {
+        current_pose.pose.orientation.z = std::sin(*current_pose_yaw * 0.5);
+        current_pose.pose.orientation.w = std::cos(*current_pose_yaw * 0.5);
+      } else {
+        current_pose.pose.orientation.w = 1.0;
+      }
+      path.poses.push_back(current_pose);
+    }
+
+    path.poses.push_back(target_pose);
+    return path;
+  }
+
+  bool follow_path_to_pose_blocking(
+    const geometry_msgs::msg::PoseStamped & target_pose,
+    std::string & result_message)
+  {
+    if (!follow_path_client_->wait_for_action_server(action_wait_timeout_)) {
+      result_message = "follow_path action server is unavailable";
+      return false;
+    }
+
+    FollowPath::Goal goal;
+    goal.path = make_short_path_to_pose(target_pose);
+    goal.controller_id = docking_controller_id_;
+    goal.goal_checker_id = docking_goal_checker_id_;
+    goal.progress_checker_id = docking_progress_checker_id_;
+
+    auto future = follow_path_client_->async_send_goal(goal);
+    if (future.wait_for(action_wait_timeout_) != std::future_status::ready) {
+      result_message = "timed out waiting for follow_path goal acceptance";
+      return false;
+    }
+
+    auto goal_handle = future.get();
+    if (!goal_handle) {
+      result_message = "follow_path goal rejected by controller_server";
+      return false;
+    }
+
+    auto result_future = follow_path_client_->async_get_result(goal_handle);
+    if (result_future.wait_for(dock_motion_timeout_) != std::future_status::ready) {
+      follow_path_client_->async_cancel_goal(goal_handle);
+      result_message = "timed out executing docking MPPI path";
+      return false;
+    }
+
+    const auto result = result_future.get();
+    if (result.code == rclcpp_action::ResultCode::SUCCEEDED &&
+      result.result->error_code == FollowPath::Result::NONE)
+    {
+      result_message = "docking MPPI path succeeded";
+      return true;
+    }
+
+    result_message = "docking MPPI path failed: " + result.result->error_msg;
+    return false;
+  }
+
+  bool set_controller_goal_checker_tolerances(
+    double xy_tolerance,
+    double yaw_tolerance,
+    std::string & result_message)
+  {
+    if (!controller_parameters_client_->wait_for_service(action_wait_timeout_)) {
+      result_message = "controller parameter service is unavailable";
+      return false;
+    }
+
+    auto request = std::make_shared<SetParameters::Request>();
+    rcl_interfaces::msg::Parameter xy_parameter;
+    xy_parameter.name = "general_goal_checker.xy_goal_tolerance";
+    xy_parameter.value.type = rcl_interfaces::msg::ParameterType::PARAMETER_DOUBLE;
+    xy_parameter.value.double_value = xy_tolerance;
+    request->parameters.push_back(xy_parameter);
+
+    rcl_interfaces::msg::Parameter yaw_parameter;
+    yaw_parameter.name = "general_goal_checker.yaw_goal_tolerance";
+    yaw_parameter.value.type = rcl_interfaces::msg::ParameterType::PARAMETER_DOUBLE;
+    yaw_parameter.value.double_value = yaw_tolerance;
+    request->parameters.push_back(yaw_parameter);
+
+    auto future = controller_parameters_client_->async_send_request(request);
+    if (future.wait_for(action_wait_timeout_) != std::future_status::ready) {
+      result_message = "timed out setting controller goal checker tolerances";
+      return false;
+    }
+
+    const auto response = future.get();
+    if (!response || response->results.size() != request->parameters.size()) {
+      result_message = "controller goal checker tolerance update failed";
+      return false;
+    }
+
+    for (const auto & result : response->results) {
+      if (!result.successful) {
+        result_message = "controller goal checker tolerance update failed: " + result.reason;
+        return false;
+      }
+    }
+
+    result_message = "controller goal checker tolerances updated";
+    return true;
+  }
+
+  bool set_collision_monitor_enabled(bool enabled, std::string & result_message)
+  {
+    if (!collision_toggle_client_->wait_for_service(action_wait_timeout_)) {
+      result_message = "collision monitor toggle service is unavailable";
+      return false;
+    }
+
+    auto request = std::make_shared<Toggle::Request>();
+    request->enable = enabled;
+    auto future = collision_toggle_client_->async_send_request(request);
+    if (future.wait_for(action_wait_timeout_) != std::future_status::ready) {
+      result_message = "timed out toggling collision monitor";
+      return false;
+    }
+
+    const auto response = future.get();
+    if (!response || !response->success) {
+      result_message = response ? response->message : "collision monitor toggle failed";
+      return false;
+    }
+
+    result_message = enabled ? "collision monitor enabled" : "collision monitor disabled";
+    return true;
+  }
+
+  void clear_active_goal()
+  {
+    std::lock_guard<std::mutex> lock(state_mutex_);
+    active_goal_handle_.reset();
+    active_target_name_.clear();
   }
 
   void handle_result(
@@ -741,6 +1286,28 @@ private:
     std_msgs::msg::String target_state_message;
     target_state_message.data = target_state;
     target_state_publisher_->publish(target_state_message);
+  }
+
+  void set_dock_state(DockState dock_state)
+  {
+    {
+      std::lock_guard<std::mutex> lock(state_mutex_);
+      dock_state_ = dock_state;
+    }
+    publish_dock_state();
+  }
+
+  void publish_dock_state()
+  {
+    DockState dock_state;
+    {
+      std::lock_guard<std::mutex> lock(state_mutex_);
+      dock_state = dock_state_;
+    }
+
+    std_msgs::msg::String message;
+    message.data = dock_state_name(dock_state);
+    dock_state_publisher_->publish(message);
   }
 
   bool publish_initial_pose_internal()
@@ -1019,12 +1586,28 @@ private:
   std::string navigate_action_status_topic_;
   std::string navigate_service_name_;
   std::string cancel_service_name_;
+  std::string auto_dock_service_name_;
+  std::string undock_service_name_;
   std::string set_initial_pose_service_name_;
   std::string nav_status_topic_;
   std::string nav_feedback_topic_;
   std::string target_state_topic_;
+  std::string dock_state_topic_;
   std::string initial_pose_topic_;
+  std::string follow_path_action_name_;
+  std::string collision_monitor_toggle_service_;
+  std::string controller_parameters_service_;
+  std::string dock_staging_target_;
+  std::string dock_charge_target_;
+  std::string docking_controller_id_;
+  std::string docking_goal_checker_id_;
+  std::string docking_progress_checker_id_;
+  double normal_goal_checker_xy_tolerance_{0.20};
+  double normal_goal_checker_yaw_tolerance_{0.15};
+  double dock_goal_checker_xy_tolerance_{0.03};
+  double dock_goal_checker_yaw_tolerance_{0.05235987755982989};
   std::chrono::milliseconds action_wait_timeout_{3000};
+  std::chrono::milliseconds dock_motion_timeout_{30000};
   std::chrono::milliseconds startup_delay_{3000};
   std::chrono::milliseconds input_freshness_timeout_{500};
   std::chrono::milliseconds startup_poll_period_{5};
@@ -1039,6 +1622,8 @@ private:
   std::optional<std::string> pending_target_name_;
   bool switching_to_pending_target_{false};
   bool navigation_ready_{false};
+  DockState dock_state_{DockState::Free};
+  std::mutex operation_mutex_;
 
   StartupState startup_state_{StartupState::BootDelay};
   std::chrono::steady_clock::time_point startup_deadline_;
@@ -1058,6 +1643,9 @@ private:
   std::unique_ptr<tf2_ros::Buffer> tf_buffer_;
   std::shared_ptr<tf2_ros::TransformListener> tf_listener_;
   rclcpp_action::Client<NavigateToPose>::SharedPtr action_client_;
+  rclcpp_action::Client<FollowPath>::SharedPtr follow_path_client_;
+  rclcpp::Client<Toggle>::SharedPtr collision_toggle_client_;
+  rclcpp::Client<SetParameters>::SharedPtr controller_parameters_client_;
   rclcpp::Client<ManageLifecycleNodes>::SharedPtr localization_manager_client_;
   rclcpp::Client<ManageLifecycleNodes>::SharedPtr navigation_manager_client_;
   rclcpp::Client<GetState>::SharedPtr map_server_state_client_;
@@ -1068,6 +1656,7 @@ private:
   rclcpp::Publisher<std_msgs::msg::String>::SharedPtr nav_status_publisher_;
   rclcpp::Publisher<NavigateToPose::Impl::FeedbackMessage>::SharedPtr nav_feedback_publisher_;
   rclcpp::Publisher<std_msgs::msg::String>::SharedPtr target_state_publisher_;
+  rclcpp::Publisher<std_msgs::msg::String>::SharedPtr dock_state_publisher_;
   rclcpp::Publisher<geometry_msgs::msg::PoseWithCovarianceStamped>::SharedPtr initial_pose_publisher_;
   rclcpp::Subscription<GoalStatusArray>::SharedPtr action_status_subscription_;
   rclcpp::Subscription<sensor_msgs::msg::LaserScan>::SharedPtr scan_subscription_;
@@ -1076,7 +1665,9 @@ private:
   rclcpp::Subscription<geometry_msgs::msg::PoseWithCovarianceStamped>::SharedPtr
     amcl_pose_subscription_;
   rclcpp::Service<SetString>::SharedPtr navigate_service_;
+  rclcpp::Service<SetString>::SharedPtr auto_dock_service_;
   rclcpp::Service<Trigger>::SharedPtr cancel_service_;
+  rclcpp::Service<Trigger>::SharedPtr undock_service_;
   rclcpp::Service<Trigger>::SharedPtr set_initial_pose_service_;
   rclcpp::TimerBase::SharedPtr startup_timer_;
   rclcpp::TimerBase::SharedPtr status_publish_timer_;

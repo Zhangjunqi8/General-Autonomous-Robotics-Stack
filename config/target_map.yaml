@@ -14,6 +14,29 @@ target_groups:
           y: 0.0
           z: 0.006576076715293465
           w: 0.9999783773737483
+    # Auto-dock placeholders. Replace these two poses with measured values before use.
+    DOCK_STAGING:
+      poses:
+      - position:
+          x: -0.8908886909484863
+          y: 0.019587140530347824
+          z: 0.0
+        orientation:
+          x: 0.0
+          y: 0.0
+          z: 0.017372205512159327
+          w: 0.999849091851187
+    DOCK_CHARGE:
+      poses:
+      - position:
+          x: -1.691488859843157
+          y: 0.071649461277754
+          z: 0.0
+        orientation:
+          x: 0.0
+          y: 0.0
+          z: 0.022413609696826
+          w: 0.999945419391152
     矿泉水区:
       poses:
       - position:

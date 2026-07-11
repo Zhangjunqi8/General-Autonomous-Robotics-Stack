@@ -107,8 +107,8 @@ controller_server:  # 把全局路径转换成实时速度命令。
     odom_topic: "/odometry/filtered"
     cmd_vel_out_topic: "cmd_vel_nav"
     progress_checker_plugins: ["progress_checker"]
-    goal_checker_plugins: ["general_goal_checker"]
-    controller_plugins: ["FollowPath"]
+    goal_checker_plugins: [general_goal_checker]
+    controller_plugins: ["FollowPath", "DockMppi"]
     use_realtime_priority: false
 
     progress_checker:  # 防止机器人长时间卡住仍继续执行同一个导航任务。
@@ -199,6 +199,58 @@ controller_server:  # 把全局路径转换成实时速度命令。
         enabled: true
         cost_power: 1
         cost_weight: 15.0      # 注释：设为极低！取消对非横移运动的偏好，彻底释放麦轮螃蟹步天赋
+
+    DockMppi:
+      plugin: "nav2_mppi_controller::MPPIController"
+      time_steps: 40
+      model_dt: 0.05
+      batch_size: 1200
+      vx_std: 0.08
+      vy_std: 0.0
+      wz_std: 0.10
+      vx_max: 0.08
+      vx_min: -0.08
+      vy_max: 0.0
+      vy_min: 0.0
+      wz_max: 0.25
+      wz_min: -0.25
+      use_polygon_footprint: true
+      TrajectoryVisualizer:
+        trajectory_step: 5
+        time_step: 3
+      critics:
+        - ConstraintCritic
+        - GoalCritic
+        - GoalAngleCritic
+        - PathAlignCritic
+        - PathFollowCritic
+        - PathAngleCritic
+      ConstraintCritic:
+        enabled: true
+        cost_power: 1
+        cost_weight: 4.0
+      GoalCritic:
+        enabled: true
+        cost_power: 1
+        cost_weight: 8.0
+      GoalAngleCritic:
+        enabled: true
+        cost_power: 1
+        cost_weight: 6.0
+      PathAlignCritic:
+        enabled: true
+        cost_power: 1
+        cost_weight: 18.0
+      PathFollowCritic:
+        enabled: true
+        cost_power: 1
+        cost_weight: 18.0
+      PathAngleCritic:
+        enabled: true
+        cost_power: 1
+        cost_weight: 6.0
+        mode: 1
+        reversing_allowed: true
 
 planner_server:  # 生成从当前位置到目标点的全局路径。
   ros__parameters:
