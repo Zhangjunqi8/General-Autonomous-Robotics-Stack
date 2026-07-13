@@ -9,9 +9,14 @@
 
   <buildtool_depend>ament_cmake</buildtool_depend>
 
+  <build_depend>libasound2-dev</build_depend>
+  <build_depend>libgstreamer-plugins-base1.0-dev</build_depend>
+  <build_depend>libgstreamer1.0-dev</build_depend>
+  <build_depend>pkg-config</build_depend>
   <build_depend>action_msgs</build_depend>
   <build_depend>geometry_msgs</build_depend>
   <build_depend>hanmole_msgs</build_depend>
+  <build_depend>hanmole_sdk</build_depend>
   <build_depend>lifecycle_msgs</build_depend>
   <build_depend>nav2_msgs</build_depend>
   <build_depend>nav_msgs</build_depend>
@@ -20,11 +25,13 @@
   <build_depend>sensor_msgs</build_depend>
   <build_depend>std_msgs</build_depend>
   <build_depend>std_srvs</build_depend>
+  <build_depend>tf2_ros</build_depend>
   <build_depend>yaml-cpp</build_depend>
 
   <build_export_depend>action_msgs</build_export_depend>
   <build_export_depend>geometry_msgs</build_export_depend>
   <build_export_depend>hanmole_msgs</build_export_depend>
+  <build_export_depend>hanmole_sdk</build_export_depend>
   <build_export_depend>lifecycle_msgs</build_export_depend>
   <build_export_depend>nav2_msgs</build_export_depend>
   <build_export_depend>nav_msgs</build_export_depend>
@@ -33,11 +40,13 @@
   <build_export_depend>sensor_msgs</build_export_depend>
   <build_export_depend>std_msgs</build_export_depend>
   <build_export_depend>std_srvs</build_export_depend>
+  <build_export_depend>tf2_ros</build_export_depend>
   <build_export_depend>yaml-cpp</build_export_depend>
 
   <exec_depend>action_msgs</exec_depend>
   <exec_depend>geometry_msgs</exec_depend>
   <exec_depend>hanmole_msgs</exec_depend>
+  <exec_depend>hanmole_sdk</exec_depend>
   <exec_depend>lifecycle_msgs</exec_depend>
   <exec_depend>ament_index_python</exec_depend>
   <exec_depend>launch</exec_depend>

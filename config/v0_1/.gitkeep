@@ -1,1 +1,10 @@
-
+__pycache__/
+*.py[cod]
+*.so
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.runtime/
+.coverage
+coverage.xml
+.DS_Store

@@ -1,0 +1,74 @@
+%YAML:1.0
+
+File.version: "1.0"
+Camera.type: "KannalaBrandt8"
+Camera1.fx: 397.841465884
+Camera1.fy: 399.861908079
+Camera1.cx: 1003.4162406
+Camera1.cy: 484.844877387
+Camera1.k1: 0.257603497223
+Camera1.k2: 0.217747353607
+Camera1.k3: -0.0900996367365
+Camera1.k4: 0.0879170145186
+Camera1.overlappingBegin: 0
+Camera1.overlappingEnd: 1920
+Camera2.fx: 420.633512004
+Camera2.fy: 422.733352763
+Camera2.cx: 961.209084821
+Camera2.cy: 467.795924973
+Camera2.k1: 0.283246131032
+Camera2.k2: 0.14604434339
+Camera2.k3: 0.0102090211584
+Camera2.k4: 0.049877504096
+Camera2.overlappingBegin: 0
+Camera2.overlappingEnd: 1920
+Stereo.T_c1_c2: !!opencv-matrix
+  rows: 4
+  cols: 4
+  dt: f
+  data: [0.999902146444, -0.00416101274542, -0.0133560289583, 0.0625093907274, 0.00461113158973, 0.999416300231, 0.0338496129556, -0.00162135932353, 0.0132073843764, -0.0339078870576, 0.99933769077, -0.00792914842813, 0, 0, 0, 1]
+Stereo.ThDepth: 40.0
+Camera.width: 1920
+Camera.height: 1080
+Camera.fps: 30
+Camera.RGB: 0
+Camera.newWidth: 1280
+Camera.newHeight: 720
+IMU.T_b_c1: !!opencv-matrix
+  rows: 4
+  cols: 4
+  dt: f
+  data: [0.999999445426, 0.000170059158135, 0.00103933955895, 0.0579104153838, -0.000170059216274, 0.99999998554, -0.000000032436716704, 0.0317454857253, -0.00103933954943, -0.000000144312572121, 0.999999459886, 1.4272418979, 0.0, 0.0, 0.0, 1.0]
+IMU.NoiseGyro: 1.0e-3
+IMU.NoiseAcc: 1.0e-2
+IMU.GyroWalk: 1.0e-6
+IMU.AccWalk: 1.0e-4
+IMU.Frequency: 200.0
+IMU.InsertKFsWhenLost: 0
+ORBextractor.nFeatures: 2500
+ORBextractor.scaleFactor: 1.2
+ORBextractor.nLevels: 8
+ORBextractor.iniThFAST: 12
+ORBextractor.minThFAST: 5
+Viewer.KeyFrameSize: 0.05
+Viewer.KeyFrameLineWidth: 1.0
+Viewer.GraphLineWidth: 0.9
+Viewer.PointSize: 2.0
+Viewer.CameraSize: 0.08
+Viewer.CameraLineWidth: 3.0
+Viewer.ViewpointX: 0.0
+Viewer.ViewpointY: -0.7
+Viewer.ViewpointZ: -1.8
+Viewer.ViewpointF: 500.0
+Viewer.imageViewScale: 1.0
+loopClosing: 0
+VO.T_base_c1: !!opencv-matrix
+  rows: 4
+  cols: 4
+  dt: f
+  data: [0.999999445426, 0.000170059158135, 0.00103933955895, 0.0579104153838, -0.000170059216274, 0.99999998554, -0.000000032436716704, 0.0317454857253, -0.00103933954943, -0.000000144312572121, 0.999999459886, 1.4272418979, 0.0, 0.0, 0.0, 1.0]
+VO.T_nav_vio: !!opencv-matrix
+  rows: 4
+  cols: 4
+  dt: f
+  data: [0.0, 0.0, 1.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0]
