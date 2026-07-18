@@ -13,26 +13,42 @@
   <build_depend>geometry_msgs</build_depend>
   <build_depend>hanmole_msgs</build_depend>
   <build_depend>lifecycle_msgs</build_depend>
+  <build_depend>nav2_core</build_depend>
+  <build_depend>nav2_costmap_2d</build_depend>
+  <build_depend>nav2_util</build_depend>
   <build_depend>nav2_msgs</build_depend>
   <build_depend>nav_msgs</build_depend>
+  <build_depend>pluginlib</build_depend>
   <build_depend>rclcpp</build_depend>
   <build_depend>rclcpp_action</build_depend>
+  <build_depend>rclcpp_lifecycle</build_depend>
   <build_depend>sensor_msgs</build_depend>
   <build_depend>std_msgs</build_depend>
   <build_depend>std_srvs</build_depend>
+  <build_depend>tf2</build_depend>
+  <build_depend>tf2_geometry_msgs</build_depend>
+  <build_depend>tf2_ros</build_depend>
   <build_depend>yaml-cpp</build_depend>
 
   <build_export_depend>action_msgs</build_export_depend>
   <build_export_depend>geometry_msgs</build_export_depend>
   <build_export_depend>hanmole_msgs</build_export_depend>
   <build_export_depend>lifecycle_msgs</build_export_depend>
+  <build_export_depend>nav2_core</build_export_depend>
+  <build_export_depend>nav2_costmap_2d</build_export_depend>
+  <build_export_depend>nav2_util</build_export_depend>
   <build_export_depend>nav2_msgs</build_export_depend>
   <build_export_depend>nav_msgs</build_export_depend>
+  <build_export_depend>pluginlib</build_export_depend>
   <build_export_depend>rclcpp</build_export_depend>
   <build_export_depend>rclcpp_action</build_export_depend>
+  <build_export_depend>rclcpp_lifecycle</build_export_depend>
   <build_export_depend>sensor_msgs</build_export_depend>
   <build_export_depend>std_msgs</build_export_depend>
   <build_export_depend>std_srvs</build_export_depend>
+  <build_export_depend>tf2</build_export_depend>
+  <build_export_depend>tf2_geometry_msgs</build_export_depend>
+  <build_export_depend>tf2_ros</build_export_depend>
   <build_export_depend>yaml-cpp</build_export_depend>
 
   <exec_depend>action_msgs</exec_depend>
