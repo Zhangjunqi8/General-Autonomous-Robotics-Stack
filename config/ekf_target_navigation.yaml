@@ -29,7 +29,6 @@ nav2_target_gateway:
     navigate_action_status_topic: "/navigate_to_pose/_action/status"
     follow_path_action_name: "/follow_path"
     collision_monitor_toggle_service: "/collision_monitor/toggle"
-    controller_parameters_service: "/controller_server/set_parameters"
     navigate_service_name: "/hanmole/agv/navigate_to_pose"
     cancel_service_name: "/hanmole/agv/navigate_cancel"
     auto_dock_service_name: "/hanmole/agv/auto_dock"
@@ -47,12 +46,9 @@ nav2_target_gateway:
     dock_staging_target: "DOCK_STAGING"
     dock_charge_target: "DOCK_CHARGE"
     docking_controller_id: "DockMppi"
-    docking_goal_checker_id: general_goal_checker
-    docking_progress_checker_id: "progress_checker"
-    normal_goal_checker_xy_tolerance: 0.20
-    normal_goal_checker_yaw_tolerance: 0.15
-    dock_goal_checker_xy_tolerance: 0.03
-    dock_goal_checker_yaw_tolerance: 0.05235987755982989
+    docking_goal_checker_id: "dock_goal_checker"
+    undock_goal_checker_id: "general_goal_checker"
+    docking_progress_checker_id: "dock_progress_checker"
 
 target_catalog_publisher:
   ros__parameters:

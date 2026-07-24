@@ -21,8 +21,6 @@
 #include "nav_msgs/msg/occupancy_grid.hpp"
 #include "nav_msgs/msg/odometry.hpp"
 #include "nav_msgs/msg/path.hpp"
-#include "rcl_interfaces/msg/parameter_type.hpp"
-#include "rcl_interfaces/srv/set_parameters.hpp"
 #include "rclcpp/executors/multi_threaded_executor.hpp"
 #include "rclcpp/rclcpp.hpp"
 #include "rclcpp_action/rclcpp_action.hpp"
@@ -149,7 +147,6 @@ public:
   using GoalHandleFollowPath = rclcpp_action::ClientGoalHandle<FollowPath>;
   using GetState = lifecycle_msgs::srv::GetState;
   using ManageLifecycleNodes = nav2_msgs::srv::ManageLifecycleNodes;
-  using SetParameters = rcl_interfaces::srv::SetParameters;
   using SetString = hanmole_msgs::srv::SetString;
   using Toggle = nav2_msgs::srv::Toggle;
   using Trigger = std_srvs::srv::Trigger;
@@ -214,23 +211,17 @@ public:
       "follow_path_action_name", "/follow_path");
     collision_monitor_toggle_service_ = declare_parameter<std::string>(
       "collision_monitor_toggle_service", "/collision_monitor/toggle");
-    controller_parameters_service_ = declare_parameter<std::string>(
-      "controller_parameters_service", "/controller_server/set_parameters");
     dock_staging_target_ = declare_parameter<std::string>("dock_staging_target", "DOCK_STAGING");
     dock_charge_target_ = declare_parameter<std::string>("dock_charge_target", "DOCK_CHARGE");
     docking_controller_id_ = declare_parameter<std::string>("docking_controller_id", "DockMppi");
     docking_goal_checker_id_ = declare_parameter<std::string>(
       "docking_goal_checker_id", "dock_goal_checker");
+    undock_goal_checker_id_ = declare_parameter<std::string>(
+      "undock_goal_checker_id", "general_goal_checker");
     docking_progress_checker_id_ = declare_parameter<std::string>(
       "docking_progress_checker_id", "progress_checker");
-    normal_goal_checker_xy_tolerance_ = declare_parameter<double>(
-      "normal_goal_checker_xy_tolerance", 0.20);
-    normal_goal_checker_yaw_tolerance_ = declare_parameter<double>(
-      "normal_goal_checker_yaw_tolerance", 0.15);
-    dock_goal_checker_xy_tolerance_ = declare_parameter<double>(
-      "dock_goal_checker_xy_tolerance", 0.03);
-    dock_goal_checker_yaw_tolerance_ = declare_parameter<double>(
-      "dock_goal_checker_yaw_tolerance", 0.05235987755982989);
+    auto_dock_staging_behavior_tree_ = declare_parameter<std::string>(
+      "auto_dock_staging_behavior_tree", "");
     const int action_timeout_ms = declare_parameter<int>("action_timeout_ms", 3000);
     const int dock_motion_timeout_ms = declare_parameter<int>("dock_motion_timeout_ms", 30000);
     const int startup_delay_ms = declare_parameter<int>("startup_delay_ms", 3000);
@@ -288,10 +279,6 @@ public:
       callback_group_);
     collision_toggle_client_ = create_client<Toggle>(
       collision_monitor_toggle_service_,
-      rclcpp::ServicesQoS(),
-      callback_group_);
-    controller_parameters_client_ = create_client<SetParameters>(
-      controller_parameters_service_,
       rclcpp::ServicesQoS(),
       callback_group_);
     localization_manager_client_ = create_client<ManageLifecycleNodes>(
@@ -459,11 +446,19 @@ private:
 
   void handle_amcl_pose(const geometry_msgs::msg::PoseWithCovarianceStamped & message)
   {
+    update_current_pose_cache(message.pose.pose);
+  }
+
+  void update_current_pose_cache(const geometry_msgs::msg::PoseStamped & pose)
+  {
+    update_current_pose_cache(pose.pose);
+  }
+
+  void update_current_pose_cache(const geometry_msgs::msg::Pose & pose)
+  {
     std::lock_guard<std::mutex> lock(state_mutex_);
-    current_pose_xy_ = std::make_pair(
-      message.pose.pose.position.x,
-      message.pose.pose.position.y);
-    current_pose_yaw_ = yaw_from_quaternion(message.pose.pose.orientation);
+    current_pose_xy_ = std::make_pair(pose.position.x, pose.position.y);
+    current_pose_yaw_ = yaw_from_quaternion(pose.orientation);
   }
 
   void handle_action_status(const GoalStatusArray & message)
@@ -539,25 +534,40 @@ private:
     std::optional<std::pair<double, double>> current_pose_xy;
     std::shared_ptr<GoalHandleNavigateToPose> active_goal_handle;
     std::string active_target_name;
+    DockState dock_state = DockState::Free;
     bool switch_in_progress = false;
     {
       std::lock_guard<std::mutex> lock(state_mutex_);
       if (!navigation_ready_) {
         response->success = false;
         response->result = "navigation stack not ready";
+        RCLCPP_WARN(
+          get_logger(),
+          "navigate request rejected: target=%s reason=%s",
+          request->data.c_str(), response->result.c_str());
         return;
       }
       current_pose_xy = current_pose_xy_;
       active_goal_handle = active_goal_handle_;
       active_target_name = active_target_name_;
+      dock_state = dock_state_;
       switch_in_progress = switching_to_pending_target_;
     }
+
+    RCLCPP_INFO(
+      get_logger(),
+      "navigate request received: target=%s dock_state=%s active_goal=%s switch_in_progress=%s",
+      request->data.c_str(), dock_state_name(dock_state),
+      active_goal_handle ? "true" : "false",
+      switch_in_progress ? "true" : "false");
 
     if (active_goal_handle) {
       const auto target_pose = repository_.resolve_target(target_group_, request->data, current_pose_xy);
       if (!target_pose.has_value()) {
         response->success = false;
-        response->result = "target not found: " + request->data;
+        response->result =
+          "target not found in group '" + target_group_ + "': " + request->data;
+        RCLCPP_WARN(get_logger(), "navigate switch rejected: %s", response->result.c_str());
         return;
       }
 
@@ -576,8 +586,16 @@ private:
       }
       const std::string current_target = active_target_name.empty() ? "idle" : active_target_name;
       publish_state("canceling", current_target);
+      RCLCPP_INFO(
+        get_logger(),
+        "navigate switch requested: current_target=%s next_target=%s request_cancel=%s",
+        current_target.c_str(), request->data.c_str(), request_cancel ? "true" : "false");
       response->success = true;
       response->result = "switch requested: " + current_target + " -> " + request->data;
+      RCLCPP_INFO(
+        get_logger(),
+        "business navigate response: target=%s success=%s result=%s",
+        request->data.c_str(), response->success ? "true" : "false", response->result.c_str());
       return;
     }
 
@@ -585,25 +603,62 @@ private:
     if (!operation_lock.owns_lock()) {
       response->success = false;
       response->result = "navigation operation already in progress";
+      RCLCPP_WARN(
+        get_logger(),
+        "business navigate rejected before dock handling: target=%s reason=%s",
+        request->data.c_str(), response->result.c_str());
       return;
     }
 
+    RCLCPP_INFO(
+      get_logger(),
+      "business navigate dock check: target=%s dock_state=%s",
+      request->data.c_str(), dock_state_name(dock_state));
     if (!leave_dock_if_needed(response->result)) {
+      RCLCPP_WARN(
+        get_logger(),
+        "navigate request failed during dock handling: target=%s reason=%s",
+        request->data.c_str(), response->result.c_str());
       response->success = false;
+      RCLCPP_WARN(
+        get_logger(),
+        "business navigate response: target=%s success=%s result=%s",
+        request->data.c_str(), response->success ? "true" : "false", response->result.c_str());
       return;
     }
 
+    RCLCPP_INFO(
+      get_logger(),
+      "navigate request proceeding after dock handling: target=%s",
+      request->data.c_str());
     response->success = start_navigation_to_target(request->data, response->result);
+    if (response->success) {
+      RCLCPP_INFO(
+        get_logger(),
+        "business navigate response: target=%s success=%s result=%s",
+        request->data.c_str(), response->success ? "true" : "false", response->result.c_str());
+    } else {
+      RCLCPP_WARN(
+        get_logger(),
+        "business navigate response: target=%s success=%s result=%s",
+        request->data.c_str(), response->success ? "true" : "false", response->result.c_str());
+    }
   }
 
   bool start_navigation_to_target(const std::string & target_name, std::string & result_message)
   {
+    RCLCPP_INFO(get_logger(), "start navigation to target: target=%s", target_name.c_str());
+
     std::optional<std::pair<double, double>> current_pose_xy;
     std::optional<double> current_pose_yaw;
     {
       std::lock_guard<std::mutex> lock(state_mutex_);
       if (!navigation_ready_) {
         result_message = "navigation stack not ready";
+        RCLCPP_WARN(
+          get_logger(),
+          "navigation start rejected: target=%s reason=%s",
+          target_name.c_str(), result_message.c_str());
         return false;
       }
       current_pose_xy = current_pose_xy_;
@@ -612,7 +667,9 @@ private:
 
     const auto target_pose = repository_.resolve_target(target_group_, target_name, current_pose_xy);
     if (!target_pose.has_value()) {
-      result_message = "target not found: " + target_name;
+      result_message =
+        "target not found in group '" + target_group_ + "': " + target_name;
+      RCLCPP_WARN(get_logger(), "navigation target lookup failed: %s", result_message.c_str());
       return false;
     }
 
@@ -625,6 +682,10 @@ private:
       if (xy_error <= goal_xy_tolerance_ && yaw_error <= goal_yaw_tolerance_) {
         publish_terminal_state("succeeded", target_name);
         result_message = "already at target: " + target_name;
+        RCLCPP_INFO(
+          get_logger(),
+          "navigation target already reached: target=%s xy_error=%.3f yaw_error=%.3f",
+          target_name.c_str(), xy_error, yaw_error);
         return true;
       }
     }
@@ -633,6 +694,10 @@ private:
     if (!action_client_->wait_for_action_server(action_wait_timeout_)) {
       publish_terminal_state("failed");
       result_message = "navigate_to_pose action server is unavailable";
+      RCLCPP_WARN(
+        get_logger(),
+        "navigation start failed: target=%s reason=%s",
+        target_name.c_str(), result_message.c_str());
       return false;
     }
 
@@ -649,6 +714,7 @@ private:
         GoalHandleNavigateToPose::SharedPtr goal_handle,
         const std::shared_ptr<const NavigateToPose::Feedback> feedback)
       {
+        update_current_pose_cache(feedback->current_pose);
         NavigateToPose::Impl::FeedbackMessage feedback_message;
         feedback_message.goal_id.uuid = goal_handle->get_goal_id();
         feedback_message.feedback = *feedback;
@@ -659,10 +725,20 @@ private:
         handle_result(target_name, result);
       };
 
+    RCLCPP_INFO(
+      get_logger(),
+      "sending navigate_to_pose goal: target=%s frame=%s x=%.3f y=%.3f yaw=%.3f",
+      target_name.c_str(), goal.pose.header.frame_id.c_str(),
+      goal.pose.pose.position.x, goal.pose.pose.position.y,
+      yaw_from_quaternion(goal.pose.pose.orientation));
     auto future = action_client_->async_send_goal(goal, options);
     if (future.wait_for(action_wait_timeout_) != std::future_status::ready) {
       publish_terminal_state("failed");
       result_message = "timed out waiting for goal acceptance";
+      RCLCPP_WARN(
+        get_logger(),
+        "navigation goal acceptance timed out: target=%s reason=%s",
+        target_name.c_str(), result_message.c_str());
       return false;
     }
 
@@ -670,6 +746,10 @@ private:
     if (!goal_handle) {
       publish_terminal_state("failed");
       result_message = "goal rejected by action server";
+      RCLCPP_WARN(
+        get_logger(),
+        "navigation goal rejected: target=%s reason=%s",
+        target_name.c_str(), result_message.c_str());
       return false;
     }
 
@@ -679,6 +759,7 @@ private:
       active_target_name_ = target_name;
     }
     publish_state("navigating", target_name);
+    RCLCPP_INFO(get_logger(), "navigate_to_pose goal accepted: target=%s", target_name.c_str());
 
     result_message = "goal accepted: " + target_name;
     return true;
@@ -716,58 +797,65 @@ private:
     std::shared_ptr<SetString::Response> response)
   {
     (void)request;
+    RCLCPP_INFO(
+      get_logger(),
+      "auto_dock request received: staging_target=%s charge_target=%s",
+      dock_staging_target_.c_str(), dock_charge_target_.c_str());
     std::unique_lock<std::mutex> operation_lock(operation_mutex_, std::try_to_lock);
     if (!operation_lock.owns_lock()) {
       response->success = false;
       response->result = "navigation operation already in progress";
+      RCLCPP_WARN(get_logger(), "auto_dock request rejected: reason=%s", response->result.c_str());
       return;
     }
 
     {
       std::lock_guard<std::mutex> lock(state_mutex_);
+      RCLCPP_INFO(
+        get_logger(),
+        "auto_dock precheck: navigation_ready=%s active_goal=%s dock_state=%s",
+        navigation_ready_ ? "true" : "false",
+        active_goal_handle_ ? "true" : "false",
+        dock_state_name(dock_state_));
       if (!navigation_ready_) {
         response->success = false;
         response->result = "navigation stack not ready";
+        RCLCPP_WARN(get_logger(), "auto_dock request rejected: reason=%s", response->result.c_str());
         return;
       }
       if (active_goal_handle_) {
         response->success = false;
         response->result = "cannot dock while a navigation goal is active";
+        RCLCPP_WARN(get_logger(), "auto_dock request rejected: reason=%s", response->result.c_str());
         return;
       }
       if (dock_state_ == DockState::Docked) {
         response->success = true;
         response->result = "already docked";
+        RCLCPP_INFO(
+          get_logger(),
+          "auto_dock request skipped: dock_state=%s result=%s",
+          dock_state_name(dock_state_), response->result.c_str());
         return;
       }
     }
 
     set_dock_state(DockState::Docking);
-    if (!set_controller_goal_checker_tolerances(
-        dock_goal_checker_xy_tolerance_, dock_goal_checker_yaw_tolerance_, response->result))
-    {
-      set_dock_state(DockState::Free);
-      response->success = false;
-      return;
-    }
-
-    if (!set_collision_monitor_enabled(false, response->result)) {
-      std::string cleanup_message;
-      set_controller_goal_checker_tolerances(
-        normal_goal_checker_xy_tolerance_, normal_goal_checker_yaw_tolerance_, cleanup_message);
-      set_dock_state(DockState::Free);
-      response->success = false;
-      return;
-    }
+    RCLCPP_INFO(
+      get_logger(),
+      "auto_dock starting staging navigation: target=%s",
+      dock_staging_target_.c_str());
 
     publish_state("docking_to_staging", dock_staging_target_);
-    if (!run_navigation_to_target_blocking(dock_staging_target_, response->result)) {
+    if (!run_navigation_to_target_blocking(
+        dock_staging_target_, response->result, auto_dock_staging_behavior_tree_))
+    {
       const std::string failure_message = response->result;
-      std::string cleanup_message;
+      RCLCPP_WARN(
+        get_logger(),
+        "auto_dock staging navigation failed: target=%s reason=%s",
+        dock_staging_target_.c_str(), failure_message.c_str());
       set_dock_state(DockState::Free);
-      set_controller_goal_checker_tolerances(
-        normal_goal_checker_xy_tolerance_, normal_goal_checker_yaw_tolerance_, cleanup_message);
-      set_collision_monitor_enabled(true, cleanup_message);
       response->result = failure_message;
       response->success = false;
       return;
@@ -776,24 +864,27 @@ private:
     geometry_msgs::msg::PoseStamped charge_pose;
     if (!resolve_target_pose(dock_charge_target_, charge_pose, response->result)) {
       const std::string failure_message = response->result;
-      std::string cleanup_message;
+      RCLCPP_WARN(
+        get_logger(),
+        "auto_dock charge target lookup failed: target=%s reason=%s",
+        dock_charge_target_.c_str(), failure_message.c_str());
       set_dock_state(DockState::Free);
-      set_controller_goal_checker_tolerances(
-        normal_goal_checker_xy_tolerance_, normal_goal_checker_yaw_tolerance_, cleanup_message);
-      set_collision_monitor_enabled(true, cleanup_message);
       response->result = failure_message;
       response->success = false;
       return;
     }
 
     publish_state("docking_approach", dock_charge_target_);
-    if (!follow_path_to_pose_blocking(charge_pose, response->result)) {
+    if (!follow_path_to_pose_with_collision_monitor_disabled(
+        charge_pose, response->result, true, docking_goal_checker_id_,
+        docking_progress_checker_id_, "dock_final_approach"))
+    {
       const std::string failure_message = response->result;
-      std::string cleanup_message;
+      RCLCPP_WARN(
+        get_logger(),
+        "auto_dock final approach failed: target=%s reason=%s",
+        dock_charge_target_.c_str(), failure_message.c_str());
       set_dock_state(DockState::Free);
-      set_controller_goal_checker_tolerances(
-        normal_goal_checker_xy_tolerance_, normal_goal_checker_yaw_tolerance_, cleanup_message);
-      set_collision_monitor_enabled(true, cleanup_message);
       response->result = failure_message;
       response->success = false;
       return;
@@ -801,22 +892,40 @@ private:
 
     set_dock_state(DockState::Docked);
     publish_state("docked", dock_charge_target_);
+    RCLCPP_INFO(get_logger(), "auto_dock completed: charge_target=%s", dock_charge_target_.c_str());
     response->success = true;
     response->result = "docked at target: " + dock_charge_target_;
   }
 
   void handle_undock_request(std::shared_ptr<Trigger::Response> response)
   {
+    DockState dock_state = DockState::Free;
+    {
+      std::lock_guard<std::mutex> lock(state_mutex_);
+      dock_state = dock_state_;
+    }
+    RCLCPP_INFO(
+      get_logger(),
+      "undock request received: dock_state=%s staging_target=%s",
+      dock_state_name(dock_state), dock_staging_target_.c_str());
+
     std::unique_lock<std::mutex> operation_lock(operation_mutex_, std::try_to_lock);
     if (!operation_lock.owns_lock()) {
       response->success = false;
       response->message = "navigation operation already in progress";
+      RCLCPP_WARN(get_logger(), "undock request rejected: reason=%s", response->message.c_str());
       return;
     }
 
     response->success = leave_dock_if_needed(response->message);
     if (response->success && response->message.empty()) {
       response->message = "robot is not docked";
+    }
+
+    if (response->success) {
+      RCLCPP_INFO(get_logger(), "undock request completed: %s", response->message.c_str());
+    } else {
+      RCLCPP_WARN(get_logger(), "undock request failed: %s", response->message.c_str());
     }
   }
 
@@ -834,40 +943,66 @@ private:
 
   bool leave_dock_if_needed(std::string & result_message)
   {
+    DockState dock_state = DockState::Free;
     {
       std::lock_guard<std::mutex> lock(state_mutex_);
-      if (dock_state_ != DockState::Docked) {
+      dock_state = dock_state_;
+      if (dock_state != DockState::Docked) {
+        RCLCPP_INFO(
+          get_logger(),
+          "business navigate undock decision: skip because dock_state=%s is not docked",
+          dock_state_name(dock_state));
         return true;
       }
     }
 
+    RCLCPP_INFO(
+      get_logger(),
+      "business navigate undock decision: execute undock because dock_state=docked staging_target=%s",
+      dock_staging_target_.c_str());
+    RCLCPP_INFO(
+      get_logger(),
+      "undock starting: staging_target=%s",
+      dock_staging_target_.c_str());
     set_dock_state(DockState::Undocking);
     publish_state("undocking_to_staging", dock_staging_target_);
 
-    if (!set_collision_monitor_enabled(false, result_message)) {
-      set_dock_state(DockState::Docked);
-      return false;
-    }
-
     geometry_msgs::msg::PoseStamped staging_pose;
     if (!resolve_target_pose(dock_staging_target_, staging_pose, result_message)) {
+      RCLCPP_WARN(
+        get_logger(),
+        "undock staging target lookup failed: target=%s reason=%s",
+        dock_staging_target_.c_str(), result_message.c_str());
       set_dock_state(DockState::Docked);
       return false;
     }
 
-    if (!follow_path_to_pose_blocking(staging_pose, result_message)) {
-      set_dock_state(DockState::Docked);
-      return false;
-    }
-
-    if (!set_controller_goal_checker_tolerances(
-        normal_goal_checker_xy_tolerance_, normal_goal_checker_yaw_tolerance_, result_message))
+    RCLCPP_INFO(
+      get_logger(),
+      "undock staging target resolved: target=%s frame=%s x=%.3f y=%.3f yaw=%.3f",
+      dock_staging_target_.c_str(), staging_pose.header.frame_id.c_str(),
+      staging_pose.pose.position.x, staging_pose.pose.position.y,
+      yaw_from_quaternion(staging_pose.pose.orientation));
+    if (!follow_path_to_pose_with_collision_monitor_disabled(
+        staging_pose, result_message, true, undock_goal_checker_id_,
+        docking_progress_checker_id_, "undock_staging"))
     {
-      set_dock_state(DockState::Free);
+      RCLCPP_WARN(
+        get_logger(),
+        "undock follow_path failed: staging_target=%s reason=%s",
+        dock_staging_target_.c_str(), result_message.c_str());
+      set_dock_state(DockState::Docked);
       return false;
     }
 
+    RCLCPP_INFO(
+      get_logger(),
+      "undock reached staging target; re-enabling collision monitor");
     if (!set_collision_monitor_enabled(true, result_message)) {
+      RCLCPP_WARN(
+        get_logger(),
+        "undock reached staging but collision monitor re-enable failed: reason=%s",
+        result_message.c_str());
       set_dock_state(DockState::Free);
       return false;
     }
@@ -875,12 +1010,14 @@ private:
     set_dock_state(DockState::Free);
     publish_state("idle", "idle");
     result_message = "undocked to staging: " + dock_staging_target_;
+    RCLCPP_INFO(get_logger(), "undock completed: %s", result_message.c_str());
     return true;
   }
 
   bool run_navigation_to_target_blocking(
     const std::string & target_name,
-    std::string & result_message)
+    std::string & result_message,
+    const std::string & behavior_tree = "")
   {
     std::optional<std::pair<double, double>> current_pose_xy;
     std::optional<double> current_pose_yaw;
@@ -919,6 +1056,16 @@ private:
 
     NavigateToPose::Goal goal;
     goal.pose = target_pose_stamped(*target_pose);
+    goal.behavior_tree = behavior_tree;
+
+    RCLCPP_INFO(
+      get_logger(),
+      "sending blocking navigate_to_pose goal: target=%s frame=%s x=%.3f y=%.3f yaw=%.3f "
+      "behavior_tree=%s",
+      target_name.c_str(), goal.pose.header.frame_id.c_str(),
+      goal.pose.pose.position.x, goal.pose.pose.position.y,
+      yaw_from_quaternion(goal.pose.pose.orientation),
+      goal.behavior_tree.empty() ? "default" : goal.behavior_tree.c_str());
 
     auto options = typename rclcpp_action::Client<NavigateToPose>::SendGoalOptions();
     options.feedback_callback =
@@ -926,6 +1073,7 @@ private:
         GoalHandleNavigateToPose::SharedPtr goal_handle,
         const std::shared_ptr<const NavigateToPose::Feedback> feedback)
       {
+        update_current_pose_cache(feedback->current_pose);
         NavigateToPose::Impl::FeedbackMessage feedback_message;
         feedback_message.goal_id.uuid = goal_handle->get_goal_id();
         feedback_message.feedback = *feedback;
@@ -963,11 +1111,24 @@ private:
     if (result.code == rclcpp_action::ResultCode::SUCCEEDED &&
       result.result->error_code == NavigateToPose::Result::NONE)
     {
+      const auto reached_pose = target_pose_stamped(*target_pose);
+      update_current_pose_cache(reached_pose);
       result_message = "reached target: " + target_name;
+      RCLCPP_INFO(get_logger(), "blocking navigate_to_pose succeeded: target=%s", target_name.c_str());
       return true;
     }
 
-    result_message = "failed to reach target: " + target_name;
+    const uint16_t error_code = result.result ? result.result->error_code : 0;
+    const std::string error_msg = result.result ? result.result->error_msg : "empty result";
+    result_message =
+      "failed to reach target: " + target_name +
+      " result_code=" + std::to_string(static_cast<int>(result.code)) +
+      " error_code=" + std::to_string(error_code) +
+      " error_msg=" + error_msg;
+    RCLCPP_WARN(
+      get_logger(),
+      "blocking navigate_to_pose failed: target=%s result_code=%d error_code=%u error_msg=%s",
+      target_name.c_str(), static_cast<int>(result.code), error_code, error_msg.c_str());
     return false;
   }
 
@@ -984,7 +1145,9 @@ private:
 
     const auto target_pose = repository_.resolve_target(target_group_, target_name, current_pose_xy);
     if (!target_pose.has_value()) {
-      result_message = "target not found: " + target_name;
+      result_message =
+        "target not found in group '" + target_group_ + "': " + target_name;
+      RCLCPP_WARN(get_logger(), "target pose lookup failed: %s", result_message.c_str());
       return false;
     }
 
@@ -1038,35 +1201,91 @@ private:
 
   bool follow_path_to_pose_blocking(
     const geometry_msgs::msg::PoseStamped & target_pose,
-    std::string & result_message)
+    std::string & result_message,
+    const std::string & goal_checker_id,
+    const std::string & progress_checker_id,
+    const std::string & phase)
   {
     if (!follow_path_client_->wait_for_action_server(action_wait_timeout_)) {
       result_message = "follow_path action server is unavailable";
+      RCLCPP_WARN(get_logger(), "follow_path unavailable: reason=%s", result_message.c_str());
       return false;
     }
 
     FollowPath::Goal goal;
     goal.path = make_short_path_to_pose(target_pose);
     goal.controller_id = docking_controller_id_;
-    goal.goal_checker_id = docking_goal_checker_id_;
-    goal.progress_checker_id = docking_progress_checker_id_;
+    goal.goal_checker_id = goal_checker_id;
+    goal.progress_checker_id = progress_checker_id;
 
-    auto future = follow_path_client_->async_send_goal(goal);
+    if (!goal.path.poses.empty()) {
+      const auto & start_pose = goal.path.poses.front();
+      const double dx = target_pose.pose.position.x - start_pose.pose.position.x;
+      const double dy = target_pose.pose.position.y - start_pose.pose.position.y;
+      RCLCPP_INFO(
+        get_logger(),
+        "follow_path endpoints: phase=%s start_x=%.3f start_y=%.3f start_yaw=%.3f target_x=%.3f "
+        "target_y=%.3f target_yaw=%.3f distance=%.3f",
+        phase.c_str(), start_pose.pose.position.x, start_pose.pose.position.y,
+        yaw_from_quaternion(start_pose.pose.orientation),
+        target_pose.pose.position.x, target_pose.pose.position.y,
+        yaw_from_quaternion(target_pose.pose.orientation), std::hypot(dx, dy));
+    }
+
+    RCLCPP_INFO(
+      get_logger(),
+      "sending follow_path goal: phase=%s frame=%s x=%.3f y=%.3f yaw=%.3f poses=%zu controller=%s "
+      "goal_checker=%s progress_checker=%s",
+      phase.c_str(), target_pose.header.frame_id.c_str(), target_pose.pose.position.x, target_pose.pose.position.y,
+      yaw_from_quaternion(target_pose.pose.orientation), goal.path.poses.size(),
+      goal.controller_id.c_str(), goal.goal_checker_id.c_str(), goal.progress_checker_id.c_str());
+    auto last_feedback = std::make_shared<std::optional<FollowPath::Feedback>>();
+    auto last_feedback_log_time = std::make_shared<std::chrono::steady_clock::time_point>(
+      std::chrono::steady_clock::now());
+    auto options = typename rclcpp_action::Client<FollowPath>::SendGoalOptions();
+    options.feedback_callback =
+      [this, last_feedback, last_feedback_log_time](
+        GoalHandleFollowPath::SharedPtr,
+        const std::shared_ptr<const FollowPath::Feedback> feedback)
+      {
+        *last_feedback = *feedback;
+        const auto now_time = std::chrono::steady_clock::now();
+        if (now_time - *last_feedback_log_time >= std::chrono::seconds(1)) {
+          *last_feedback_log_time = now_time;
+          RCLCPP_INFO(
+            get_logger(),
+            "follow_path feedback: distance_to_goal=%.3f speed=%.3f",
+            feedback->distance_to_goal, feedback->speed);
+        }
+      };
+
+    auto future = follow_path_client_->async_send_goal(goal, options);
     if (future.wait_for(action_wait_timeout_) != std::future_status::ready) {
       result_message = "timed out waiting for follow_path goal acceptance";
+      RCLCPP_WARN(get_logger(), "follow_path goal acceptance timed out: reason=%s", result_message.c_str());
       return false;
     }
 
     auto goal_handle = future.get();
     if (!goal_handle) {
       result_message = "follow_path goal rejected by controller_server";
+      RCLCPP_WARN(get_logger(), "follow_path goal rejected: reason=%s", result_message.c_str());
       return false;
     }
 
+    RCLCPP_INFO(get_logger(), "follow_path goal accepted: phase=%s", phase.c_str());
     auto result_future = follow_path_client_->async_get_result(goal_handle);
     if (result_future.wait_for(dock_motion_timeout_) != std::future_status::ready) {
       follow_path_client_->async_cancel_goal(goal_handle);
-      result_message = "timed out executing docking MPPI path";
+      result_message = "timed out executing " + phase + " MPPI path";
+      if (last_feedback->has_value()) {
+        result_message +=
+          " last_distance=" + std::to_string((*last_feedback)->distance_to_goal) +
+          " last_speed=" + std::to_string((*last_feedback)->speed);
+      }
+      RCLCPP_WARN(
+        get_logger(), "follow_path execution timed out: phase=%s reason=%s",
+        phase.c_str(), result_message.c_str());
       return false;
     }
 
@@ -1074,64 +1293,85 @@ private:
     if (result.code == rclcpp_action::ResultCode::SUCCEEDED &&
       result.result->error_code == FollowPath::Result::NONE)
     {
-      result_message = "docking MPPI path succeeded";
+      result_message = phase + " MPPI path succeeded";
+      RCLCPP_INFO(get_logger(), "follow_path succeeded: phase=%s", phase.c_str());
       return true;
     }
 
-    result_message = "docking MPPI path failed: " + result.result->error_msg;
+    result_message =
+      phase + " MPPI path failed: error_code=" + std::to_string(result.result->error_code) +
+      " error_msg=" + result.result->error_msg;
+    if (last_feedback->has_value()) {
+      result_message +=
+        " last_distance=" + std::to_string((*last_feedback)->distance_to_goal) +
+        " last_speed=" + std::to_string((*last_feedback)->speed);
+    }
+    RCLCPP_WARN(
+      get_logger(), "follow_path failed: phase=%s reason=%s", phase.c_str(), result_message.c_str());
     return false;
   }
 
-  bool set_controller_goal_checker_tolerances(
-    double xy_tolerance,
-    double yaw_tolerance,
-    std::string & result_message)
+  bool follow_path_to_pose_with_collision_monitor_disabled(
+    const geometry_msgs::msg::PoseStamped & target_pose,
+    std::string & result_message,
+    bool restore_on_failure,
+    const std::string & goal_checker_id,
+    const std::string & progress_checker_id,
+    const std::string & phase)
   {
-    if (!controller_parameters_client_->wait_for_service(action_wait_timeout_)) {
-      result_message = "controller parameter service is unavailable";
+    RCLCPP_INFO(
+      get_logger(),
+      "disabling collision monitor for follow_path: phase=%s restore_on_failure=%s",
+      phase.c_str(), restore_on_failure ? "true" : "false");
+    if (!set_collision_monitor_enabled(false, result_message)) {
+      RCLCPP_WARN(
+        get_logger(),
+        "failed to disable collision monitor before follow_path: reason=%s",
+        result_message.c_str());
       return false;
     }
 
-    auto request = std::make_shared<SetParameters::Request>();
-    rcl_interfaces::msg::Parameter xy_parameter;
-    xy_parameter.name = "general_goal_checker.xy_goal_tolerance";
-    xy_parameter.value.type = rcl_interfaces::msg::ParameterType::PARAMETER_DOUBLE;
-    xy_parameter.value.double_value = xy_tolerance;
-    request->parameters.push_back(xy_parameter);
-
-    rcl_interfaces::msg::Parameter yaw_parameter;
-    yaw_parameter.name = "general_goal_checker.yaw_goal_tolerance";
-    yaw_parameter.value.type = rcl_interfaces::msg::ParameterType::PARAMETER_DOUBLE;
-    yaw_parameter.value.double_value = yaw_tolerance;
-    request->parameters.push_back(yaw_parameter);
-
-    auto future = controller_parameters_client_->async_send_request(request);
-    if (future.wait_for(action_wait_timeout_) != std::future_status::ready) {
-      result_message = "timed out setting controller goal checker tolerances";
-      return false;
+    if (follow_path_to_pose_blocking(
+        target_pose, result_message, goal_checker_id, progress_checker_id, phase))
+    {
+      RCLCPP_INFO(
+        get_logger(),
+        "follow_path completed while collision monitor is disabled; caller is responsible for re-enabling it");
+      return true;
     }
 
-    const auto response = future.get();
-    if (!response || response->results.size() != request->parameters.size()) {
-      result_message = "controller goal checker tolerance update failed";
-      return false;
-    }
-
-    for (const auto & result : response->results) {
-      if (!result.successful) {
-        result_message = "controller goal checker tolerance update failed: " + result.reason;
-        return false;
+    if (restore_on_failure) {
+      const std::string failure_message = result_message;
+      std::string cleanup_message;
+      if (set_collision_monitor_enabled(true, cleanup_message)) {
+        RCLCPP_INFO(get_logger(), "collision monitor restored after follow_path failure");
+      } else {
+        RCLCPP_ERROR(
+          get_logger(),
+          "failed to restore collision monitor after follow_path failure: reason=%s",
+          cleanup_message.c_str());
       }
+      result_message = failure_message;
+    } else {
+      RCLCPP_WARN(
+        get_logger(),
+        "follow_path failed while collision monitor remains disabled because restore_on_failure=false");
     }
-
-    result_message = "controller goal checker tolerances updated";
-    return true;
+    return false;
   }
 
   bool set_collision_monitor_enabled(bool enabled, std::string & result_message)
   {
+    const char * requested_state = enabled ? "enabled" : "disabled";
+    RCLCPP_INFO(
+      get_logger(),
+      "collision monitor toggle request: service=%s target_state=%s",
+      collision_monitor_toggle_service_.c_str(), requested_state);
+
     if (!collision_toggle_client_->wait_for_service(action_wait_timeout_)) {
-      result_message = "collision monitor toggle service is unavailable";
+      result_message =
+        "collision monitor toggle service unavailable: " + collision_monitor_toggle_service_;
+      RCLCPP_ERROR(get_logger(), "%s", result_message.c_str());
       return false;
     }
 
@@ -1139,17 +1379,26 @@ private:
     request->enable = enabled;
     auto future = collision_toggle_client_->async_send_request(request);
     if (future.wait_for(action_wait_timeout_) != std::future_status::ready) {
-      result_message = "timed out toggling collision monitor";
+      result_message =
+        "timed out toggling collision monitor to " + std::string(requested_state) +
+        " via " + collision_monitor_toggle_service_;
+      RCLCPP_ERROR(get_logger(), "%s", result_message.c_str());
       return false;
     }
 
     const auto response = future.get();
     if (!response || !response->success) {
-      result_message = response ? response->message : "collision monitor toggle failed";
+      const std::string response_message =
+        response ? response->message : "empty toggle service response";
+      result_message =
+        "collision monitor toggle to " + std::string(requested_state) + " failed: " +
+        response_message;
+      RCLCPP_ERROR(get_logger(), "%s", result_message.c_str());
       return false;
     }
 
-    result_message = enabled ? "collision monitor enabled" : "collision monitor disabled";
+    result_message = "collision monitor " + std::string(requested_state);
+    RCLCPP_INFO(get_logger(), "collision monitor toggle succeeded: state=%s", requested_state);
     return true;
   }
 
@@ -1290,10 +1539,16 @@ private:
 
   void set_dock_state(DockState dock_state)
   {
+    DockState previous_dock_state = DockState::Free;
     {
       std::lock_guard<std::mutex> lock(state_mutex_);
+      previous_dock_state = dock_state_;
       dock_state_ = dock_state;
     }
+    RCLCPP_INFO(
+      get_logger(),
+      "dock state transition: %s -> %s",
+      dock_state_name(previous_dock_state), dock_state_name(dock_state));
     publish_dock_state();
   }
 
@@ -1596,16 +1851,13 @@ private:
   std::string initial_pose_topic_;
   std::string follow_path_action_name_;
   std::string collision_monitor_toggle_service_;
-  std::string controller_parameters_service_;
   std::string dock_staging_target_;
   std::string dock_charge_target_;
   std::string docking_controller_id_;
   std::string docking_goal_checker_id_;
+  std::string undock_goal_checker_id_;
   std::string docking_progress_checker_id_;
-  double normal_goal_checker_xy_tolerance_{0.20};
-  double normal_goal_checker_yaw_tolerance_{0.15};
-  double dock_goal_checker_xy_tolerance_{0.03};
-  double dock_goal_checker_yaw_tolerance_{0.05235987755982989};
+  std::string auto_dock_staging_behavior_tree_;
   std::chrono::milliseconds action_wait_timeout_{3000};
   std::chrono::milliseconds dock_motion_timeout_{30000};
   std::chrono::milliseconds startup_delay_{3000};
@@ -1645,7 +1897,6 @@ private:
   rclcpp_action::Client<NavigateToPose>::SharedPtr action_client_;
   rclcpp_action::Client<FollowPath>::SharedPtr follow_path_client_;
   rclcpp::Client<Toggle>::SharedPtr collision_toggle_client_;
-  rclcpp::Client<SetParameters>::SharedPtr controller_parameters_client_;
   rclcpp::Client<ManageLifecycleNodes>::SharedPtr localization_manager_client_;
   rclcpp::Client<ManageLifecycleNodes>::SharedPtr navigation_manager_client_;
   rclcpp::Client<GetState>::SharedPtr map_server_state_client_;

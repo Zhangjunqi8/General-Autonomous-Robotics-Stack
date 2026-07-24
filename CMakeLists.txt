@@ -1,6 +1,12 @@
 cmake_minimum_required(VERSION 3.16)
 project(hanmole_navigation)
 
+if(NOT CMAKE_CXX_STANDARD)
+  set(CMAKE_CXX_STANDARD 17)
+endif()
+set(CMAKE_CXX_STANDARD_REQUIRED ON)
+set(CMAKE_CXX_EXTENSIONS OFF)
+
 find_package(ament_cmake REQUIRED)
 find_package(ament_cmake_pytest REQUIRED)
 find_package(action_msgs REQUIRED)
@@ -18,6 +24,7 @@ find_package(tf2_ros REQUIRED)
 find_package(yaml-cpp REQUIRED)
 
 add_library(target_repository src/target_repository.cpp)
+target_compile_features(target_repository PUBLIC cxx_std_17)
 target_include_directories(target_repository PUBLIC include)
 target_link_libraries(target_repository yaml-cpp)
 

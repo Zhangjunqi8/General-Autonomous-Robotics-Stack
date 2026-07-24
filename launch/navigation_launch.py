@@ -384,12 +384,17 @@ def _launch_setup(context, *args, **kwargs):
                     package='hanmole_navigation',
                     executable='nav2_target_gateway_node',
                     name='nav2_target_gateway',
-                    output='screen',
+                    output='both',
                     parameters=[
                         target_gateway_params,
                         {
                             'target_file': target_file,
                             'nav_mode': LaunchConfiguration('nav_mode'),
+                            'auto_dock_staging_behavior_tree': os.path.join(
+                                pkg_share,
+                                'behavior_trees',
+                                'navigate_to_pose_w_replanning_and_recovery_dock_checker.xml',
+                            ),
                         },
                     ],
                 ),
