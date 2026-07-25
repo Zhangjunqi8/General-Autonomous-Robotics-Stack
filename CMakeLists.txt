@@ -21,6 +21,7 @@ find_package(sensor_msgs REQUIRED)
 find_package(std_msgs REQUIRED)
 find_package(std_srvs REQUIRED)
 find_package(tf2_ros REQUIRED)
+find_package(visualization_msgs REQUIRED)
 find_package(yaml-cpp REQUIRED)
 
 add_library(target_repository src/target_repository.cpp)
@@ -41,6 +42,7 @@ set(navigation_node_dependencies
   std_msgs
   std_srvs
   tf2_ros
+  visualization_msgs
 )
 
 add_executable(target_catalog_publisher_node src/target_catalog_publisher_node.cpp)

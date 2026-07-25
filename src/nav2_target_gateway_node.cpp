@@ -1,15 +1,25 @@
+#include <algorithm>
+#include <array>
+#include <atomic>
 #include <chrono>
 #include <cmath>
-#include <atomic>
+#include <condition_variable>
+#include <cstddef>
+#include <cstdint>
+#include <deque>
 #include <future>
+#include <limits>
 #include <memory>
 #include <mutex>
 #include <optional>
 #include <string>
 #include <utility>
+#include <vector>
 
 #include "action_msgs/msg/goal_status.hpp"
 #include "action_msgs/msg/goal_status_array.hpp"
+#include "geometry_msgs/msg/point.hpp"
+#include "geometry_msgs/msg/pose_stamped.hpp"
 #include "geometry_msgs/msg/pose_with_covariance_stamped.hpp"
 #include "hanmole_msgs/srv/set_string.hpp"
 #include "hanmole_navigation/target_repository.hpp"
@@ -32,6 +42,7 @@
 #include "tf2/exceptions.h"
 #include "tf2_ros/buffer.h"
 #include "tf2_ros/transform_listener.h"
+#include "visualization_msgs/msg/marker.hpp"
 
 namespace
 {
@@ -53,6 +64,31 @@ double yaw_from_quaternion(const geometry_msgs::msg::Quaternion & quaternion)
   const double cosy_cosp =
     1.0 - 2.0 * (quaternion.y * quaternion.y + quaternion.z * quaternion.z);
   return std::atan2(siny_cosp, cosy_cosp);
+}
+
+geometry_msgs::msg::Quaternion quaternion_from_yaw(double yaw)
+{
+  geometry_msgs::msg::Quaternion quaternion;
+  quaternion.z = std::sin(yaw * 0.5);
+  quaternion.w = std::cos(yaw * 0.5);
+  return quaternion;
+}
+
+double median(std::vector<double> values)
+{
+  if (values.empty()) {
+    return 0.0;
+  }
+
+  const auto middle = values.begin() + static_cast<std::ptrdiff_t>(values.size() / 2);
+  std::nth_element(values.begin(), middle, values.end());
+  const double upper = *middle;
+  if (values.size() % 2 != 0) {
+    return upper;
+  }
+
+  const auto lower = std::max_element(values.begin(), middle);
+  return (*lower + upper) * 0.5;
 }
 
 geometry_msgs::msg::Quaternion quaternion_from_target_pose(
@@ -92,6 +128,14 @@ enum class DockState
   Docking,
   Docked,
   Undocking,
+};
+
+struct ChargingHubDetection
+{
+  geometry_msgs::msg::PoseStamped dock_pose;
+  geometry_msgs::msg::Point left_feature;
+  geometry_msgs::msg::Point right_feature;
+  double confidence{0.0};
 };
 
 const char * startup_state_name(StartupState state)
@@ -163,6 +207,7 @@ public:
     nav_mode_ = declare_parameter<std::string>("nav_mode", "ekf_odom");
     amcl_pose_topic_ = declare_parameter<std::string>("amcl_pose_topic", "/amcl_pose");
     scan_topic_ = declare_parameter<std::string>("scan_topic", "/scan");
+    dock_scan_topic_ = declare_parameter<std::string>("dock_scan_topic", "/scan/rear");
     filtered_odom_topic_ = declare_parameter<std::string>(
       "filtered_odom_topic", "/odometry/filtered");
     raw_odom_topic_ = declare_parameter<std::string>("raw_odom_topic", "/odom");
@@ -213,6 +258,10 @@ public:
       "collision_monitor_toggle_service", "/collision_monitor/toggle");
     dock_staging_target_ = declare_parameter<std::string>("dock_staging_target", "DOCK_STAGING");
     dock_charge_target_ = declare_parameter<std::string>("dock_charge_target", "DOCK_CHARGE");
+    charge_marker_topic_ = declare_parameter<std::string>("charge_marker_topic", "/charge_marker");
+    charge_marker_enabled_ = declare_parameter<bool>("charge_marker_enabled", true);
+    const int charge_marker_lifetime_ms = declare_parameter<int>(
+      "charge_marker_lifetime_ms", 0);
     docking_controller_id_ = declare_parameter<std::string>("docking_controller_id", "DockMppi");
     docking_goal_checker_id_ = declare_parameter<std::string>(
       "docking_goal_checker_id", "dock_goal_checker");
@@ -222,6 +271,64 @@ public:
       "docking_progress_checker_id", "progress_checker");
     auto_dock_staging_behavior_tree_ = declare_parameter<std::string>(
       "auto_dock_staging_behavior_tree", "");
+    const int dock_detection_timeout_ms = declare_parameter<int>(
+      "dock_detection_timeout_ms", 3000);
+    const int dock_detection_scan_freshness_ms = declare_parameter<int>(
+      "dock_detection_scan_freshness_ms", 500);
+    dock_detection_min_samples_ = declare_parameter<int>(
+      "dock_detection_min_samples", 5);
+    dock_detection_max_samples_ = declare_parameter<int>(
+      "dock_detection_max_samples", 12);
+    dock_detection_max_range_ = declare_parameter<double>(
+      "dock_detection_max_range", 2.0);
+    dock_scan_min_angle_ = declare_parameter<double>(
+      "dock_scan_min_angle", -3.141592653589793);
+    dock_scan_max_angle_ = declare_parameter<double>(
+      "dock_scan_max_angle", 3.141592653589793);
+    dock_interpolation_max_difference_ = declare_parameter<double>(
+      "dock_interpolation_max_difference", 0.02);
+    dock_mutation_min_jump_ = declare_parameter<double>(
+      "dock_mutation_min_jump", 0.025);
+    dock_mutation_max_jump_ = declare_parameter<double>(
+      "dock_mutation_max_jump", 0.065);
+    dock_feature_pair_max_angle_ = declare_parameter<double>(
+      "dock_feature_pair_max_angle", 0.12217304763960307);
+    dock_feature_outer_check_angle_ = declare_parameter<double>(
+      "dock_feature_outer_check_angle", 0.08726646259971647);
+    dock_feature_pair_max_range_difference_ = declare_parameter<double>(
+      "dock_feature_pair_max_range_difference", 0.08);
+    dock_feature_min_width_ = declare_parameter<double>(
+      "dock_feature_min_width", 0.10);
+    dock_feature_max_width_ = declare_parameter<double>(
+      "dock_feature_max_width", 1.00);
+    dock_flat_plate_detection_enabled_ = declare_parameter<bool>(
+      "dock_flat_plate_detection_enabled", true);
+    dock_flat_plate_center_angle_ = declare_parameter<double>(
+      "dock_flat_plate_center_angle", 0.0);
+    dock_flat_plate_half_angle_ = declare_parameter<double>(
+      "dock_flat_plate_half_angle", 0.20);
+    dock_flat_plate_min_points_ = declare_parameter<int>(
+      "dock_flat_plate_min_points", 8);
+    dock_flat_plate_max_rms_error_ = declare_parameter<double>(
+      "dock_flat_plate_max_rms_error", 0.03);
+    dock_flat_plate_lock_normal_to_center_angle_ = declare_parameter<bool>(
+      "dock_flat_plate_lock_normal_to_center_angle", true);
+    dock_detection_max_position_spread_ = declare_parameter<double>(
+      "dock_detection_max_position_spread", 0.05);
+    dock_detection_max_yaw_spread_ = declare_parameter<double>(
+      "dock_detection_max_yaw_spread", 0.08726646259971647);
+    dock_dynamic_max_position_correction_ = declare_parameter<double>(
+      "dock_dynamic_max_position_correction", 0.30);
+    dock_dynamic_max_yaw_correction_ = declare_parameter<double>(
+      "dock_dynamic_max_yaw_correction", 0.2617993877991494);
+    dock_nominal_hub_max_distance_ = declare_parameter<double>(
+      "dock_nominal_hub_max_distance", 1.0);
+    dock_base_to_hub_offset_min_ = declare_parameter<double>(
+      "dock_base_to_hub_offset_min", 0.05);
+    dock_base_to_hub_offset_max_ = declare_parameter<double>(
+      "dock_base_to_hub_offset_max", 1.0);
+    dock_base_to_hub_offset_ = declare_parameter<double>(
+      "dock_base_to_hub_offset", -1.0);
     const int action_timeout_ms = declare_parameter<int>("action_timeout_ms", 3000);
     const int dock_motion_timeout_ms = declare_parameter<int>("dock_motion_timeout_ms", 30000);
     const int startup_delay_ms = declare_parameter<int>("startup_delay_ms", 3000);
@@ -248,6 +355,68 @@ public:
     if (stable_tf_success_count_ < 1) {
       stable_tf_success_count_ = 1;
     }
+    if (dock_detection_min_samples_ < 1) {
+      dock_detection_min_samples_ = 1;
+    }
+    if (dock_detection_max_samples_ < dock_detection_min_samples_) {
+      dock_detection_max_samples_ = dock_detection_min_samples_;
+    }
+    if (dock_scan_min_angle_ >= dock_scan_max_angle_) {
+      throw std::runtime_error("dock_scan_min_angle must be less than dock_scan_max_angle");
+    }
+    if (dock_mutation_min_jump_ <= 0.0 ||
+      dock_mutation_min_jump_ >= dock_mutation_max_jump_)
+    {
+      throw std::runtime_error("dock mutation jump thresholds are invalid");
+    }
+    if (dock_detection_timeout_ms <= 0 || dock_detection_scan_freshness_ms <= 0) {
+      throw std::runtime_error("dock detection timeouts must be positive");
+    }
+    if (!std::isfinite(dock_detection_max_range_) || dock_detection_max_range_ <= 0.0 ||
+      !std::isfinite(dock_detection_max_position_spread_) ||
+      dock_detection_max_position_spread_ <= 0.0 ||
+      !std::isfinite(dock_detection_max_yaw_spread_) || dock_detection_max_yaw_spread_ <= 0.0 ||
+      !std::isfinite(dock_dynamic_max_position_correction_) ||
+      dock_dynamic_max_position_correction_ <= 0.0 ||
+      !std::isfinite(dock_dynamic_max_yaw_correction_) ||
+      dock_dynamic_max_yaw_correction_ <= 0.0 ||
+      !std::isfinite(dock_nominal_hub_max_distance_) || dock_nominal_hub_max_distance_ <= 0.0)
+    {
+      throw std::runtime_error("dock detection limits must be finite and positive");
+    }
+    if (!std::isfinite(dock_feature_min_width_) || !std::isfinite(dock_feature_max_width_) ||
+      dock_feature_min_width_ <= 0.0 || dock_feature_min_width_ >= dock_feature_max_width_)
+    {
+      throw std::runtime_error("dock feature width limits are invalid");
+    }
+    if (dock_flat_plate_min_points_ < 3) {
+      dock_flat_plate_min_points_ = 3;
+    }
+    if (!std::isfinite(dock_flat_plate_center_angle_) ||
+      !std::isfinite(dock_flat_plate_half_angle_) ||
+      dock_flat_plate_half_angle_ <= 0.0 || dock_flat_plate_half_angle_ > M_PI ||
+      !std::isfinite(dock_flat_plate_max_rms_error_) ||
+      dock_flat_plate_max_rms_error_ <= 0.0)
+    {
+      throw std::runtime_error("dock flat plate detection parameters are invalid");
+    }
+    if (!std::isfinite(dock_base_to_hub_offset_min_) ||
+      !std::isfinite(dock_base_to_hub_offset_max_) || dock_base_to_hub_offset_min_ < 0.0 ||
+      dock_base_to_hub_offset_min_ >= dock_base_to_hub_offset_max_)
+    {
+      throw std::runtime_error("dock base-to-hub offset limits are invalid");
+    }
+    if (dock_base_to_hub_offset_ > 0.0 &&
+      (dock_base_to_hub_offset_ < dock_base_to_hub_offset_min_ ||
+      dock_base_to_hub_offset_ > dock_base_to_hub_offset_max_))
+    {
+      throw std::runtime_error("dock_base_to_hub_offset is outside the configured limits");
+    }
+    if (dock_base_to_hub_offset_ <= 0.0) {
+      RCLCPP_WARN(
+        get_logger(),
+        "dock_base_to_hub_offset is not calibrated; dynamic docking will only correct lateral error and yaw");
+    }
 
     repository_.load_from_file(target_file);
     if (target_group_.empty()) {
@@ -259,6 +428,11 @@ public:
 
     action_wait_timeout_ = std::chrono::milliseconds(action_timeout_ms);
     dock_motion_timeout_ = std::chrono::milliseconds(dock_motion_timeout_ms);
+    dock_detection_timeout_ = std::chrono::milliseconds(dock_detection_timeout_ms);
+    dock_detection_scan_freshness_ =
+      std::chrono::milliseconds(dock_detection_scan_freshness_ms);
+    charge_marker_lifetime_ =
+      std::chrono::milliseconds(std::max(0, charge_marker_lifetime_ms));
     startup_delay_ = std::chrono::milliseconds(startup_delay_ms);
     input_freshness_timeout_ = std::chrono::milliseconds(input_freshness_timeout_ms);
     startup_poll_period_ = std::chrono::milliseconds(startup_poll_period_ms);
@@ -320,6 +494,9 @@ public:
     initial_pose_publisher_ = create_publisher<geometry_msgs::msg::PoseWithCovarianceStamped>(
       initial_pose_topic_,
       rclcpp::QoS(1).transient_local().reliable());
+    charge_marker_publisher_ = create_publisher<visualization_msgs::msg::Marker>(
+      charge_marker_topic_,
+      rclcpp::QoS(10).transient_local().reliable());
 
     status_publish_timer_ = create_wall_timer(
       std::chrono::seconds(1),
@@ -332,9 +509,12 @@ public:
     scan_subscription_ = create_subscription<sensor_msgs::msg::LaserScan>(
       scan_topic_,
       rclcpp::SensorDataQoS(),
-      [this](const sensor_msgs::msg::LaserScan::SharedPtr) {
-        last_scan_time_ = now();
-      },
+      [this](const sensor_msgs::msg::LaserScan::SharedPtr) {last_scan_time_ = now();},
+      subscription_options);
+    dock_scan_subscription_ = create_subscription<sensor_msgs::msg::LaserScan>(
+      dock_scan_topic_,
+      rclcpp::SensorDataQoS(),
+      [this](const sensor_msgs::msg::LaserScan::SharedPtr message) {handle_dock_scan(*message);},
       subscription_options);
     odom_subscription_ = create_subscription<nav_msgs::msg::Odometry>(
       odom_topic_,
@@ -792,6 +972,773 @@ private:
     response->message = "cancel requested";
   }
 
+  void handle_dock_scan(const sensor_msgs::msg::LaserScan & scan)
+  {
+    if (!dock_detection_enabled_.load(std::memory_order_relaxed)) {
+      return;
+    }
+    dock_detection_received_scans_.fetch_add(1, std::memory_order_relaxed);
+
+    const rclcpp::Time scan_stamp(scan.header.stamp);
+    if (scan_stamp.nanoseconds() <= 0) {
+      return;
+    }
+    const int64_t scan_age = (now() - scan_stamp).nanoseconds();
+    const int64_t maximum_age = std::chrono::duration_cast<std::chrono::nanoseconds>(
+      dock_detection_scan_freshness_).count();
+    if (scan_age < -100000000LL || scan_age > maximum_age) {
+      return;
+    }
+    dock_detection_fresh_scans_.fetch_add(1, std::memory_order_relaxed);
+
+    const auto detection = detect_charging_hub(scan);
+    if (detection.has_value()) {
+      dock_detection_pattern_matches_.fetch_add(1, std::memory_order_relaxed);
+      add_dock_detection_sample(*detection);
+      publish_charge_hub_marker(*detection);
+    }
+  }
+
+  bool get_dock_scan_window(
+    const sensor_msgs::msg::LaserScan & scan,
+    size_t & begin,
+    size_t & end) const
+  {
+    if (scan.ranges.empty() || !std::isfinite(scan.angle_increment) ||
+      std::abs(scan.angle_increment) <= std::numeric_limits<float>::epsilon())
+    {
+      return false;
+    }
+
+    begin = scan.ranges.size();
+    end = 0;
+    for (size_t index = 0; index < scan.ranges.size(); ++index) {
+      const double angle =
+        static_cast<double>(scan.angle_min) +
+        static_cast<double>(index) * static_cast<double>(scan.angle_increment);
+      if (angle >= dock_scan_min_angle_ && angle <= dock_scan_max_angle_) {
+        begin = std::min(begin, index);
+        end = index + 1;
+      }
+    }
+
+    return begin < end && end - begin >= 12;
+  }
+
+  std::vector<float> filter_and_interpolate_dock_ranges(
+    const sensor_msgs::msg::LaserScan & scan,
+    size_t begin,
+    size_t end) const
+  {
+    std::vector<float> ranges(end - begin, 0.0F);
+    const double sensor_min = std::isfinite(scan.range_min) ? scan.range_min : 0.0;
+    const double sensor_max =
+      std::isfinite(scan.range_max) && scan.range_max > 0.0 ?
+      scan.range_max : dock_detection_max_range_;
+    const double maximum_range = std::min(sensor_max, dock_detection_max_range_);
+
+    for (size_t index = begin; index < end; ++index) {
+      const float range = scan.ranges[index];
+      if (std::isfinite(range) && range >= sensor_min && range <= maximum_range && range > 0.0F) {
+        ranges[index - begin] = range;
+      }
+    }
+
+    constexpr float zero_tolerance = 1.0e-7F;
+    for (size_t index = 1; index + 1 < ranges.size(); ++index) {
+      if (ranges[index] > zero_tolerance || ranges[index - 1] <= zero_tolerance) {
+        continue;
+      }
+
+      if (ranges[index + 1] > zero_tolerance &&
+        std::abs(ranges[index + 1] - ranges[index - 1]) < dock_interpolation_max_difference_)
+      {
+        ranges[index] = (ranges[index - 1] + ranges[index + 1]) * 0.5F;
+        continue;
+      }
+
+      if (index + 2 < ranges.size() && ranges[index + 1] <= zero_tolerance &&
+        ranges[index + 2] > zero_tolerance &&
+        std::abs(ranges[index + 2] - ranges[index - 1]) < dock_interpolation_max_difference_)
+      {
+        const float interpolated = (ranges[index - 1] + ranges[index + 2]) * 0.5F;
+        ranges[index] = interpolated;
+        ranges[index + 1] = interpolated;
+        ++index;
+      }
+    }
+
+    return ranges;
+  }
+
+  std::vector<size_t> find_dock_mutation_points(const std::vector<float> & ranges) const
+  {
+    std::vector<size_t> mutation_indices;
+    for (size_t index = 0; index + 1 < ranges.size(); ++index) {
+      if (ranges[index] <= 0.0F || ranges[index + 1] <= 0.0F) {
+        continue;
+      }
+
+      const double jump = std::abs(ranges[index] - ranges[index + 1]);
+      if (jump > dock_mutation_min_jump_ && jump < dock_mutation_max_jump_) {
+        mutation_indices.push_back(index);
+      }
+    }
+    return mutation_indices;
+  }
+
+  std::optional<std::array<size_t, 4>> match_charging_hub_pattern(
+    const std::vector<float> & ranges,
+    const std::vector<size_t> & mutation_indices,
+    double angle_increment) const
+  {
+    if (mutation_indices.size() < 4 || angle_increment <= 0.0) {
+      return std::nullopt;
+    }
+
+    const size_t maximum_pair_gap = std::max<size_t>(
+      1, static_cast<size_t>(std::ceil(dock_feature_pair_max_angle_ / angle_increment)));
+    const size_t outside_offset = std::max<size_t>(
+      1, static_cast<size_t>(std::lround(dock_feature_outer_check_angle_ / angle_increment)));
+
+    std::optional<std::array<size_t, 4>> best_match;
+    double best_score = std::numeric_limits<double>::max();
+    for (size_t start = 0; start + 3 < mutation_indices.size(); ++start) {
+      const std::array<size_t, 4> points{
+        mutation_indices[start], mutation_indices[start + 1],
+        mutation_indices[start + 2], mutation_indices[start + 3]};
+      const size_t p0 = points[0];
+      const size_t p1 = points[1];
+      const size_t p2 = points[2];
+      const size_t p3 = points[3];
+
+      if (p0 < outside_offset || p3 + outside_offset >= ranges.size()) {
+        continue;
+      }
+      if (!(ranges[p0] < ranges[p1] && ranges[p2] < ranges[p3])) {
+        continue;
+      }
+      if (!(ranges[p0] < ranges[p0 - outside_offset] &&
+        ranges[p3] < ranges[p3 + outside_offset]))
+      {
+        continue;
+      }
+      if (p1 - p0 > maximum_pair_gap || p3 - p2 > maximum_pair_gap) {
+        continue;
+      }
+      if (p2 - p1 <= maximum_pair_gap) {
+        continue;
+      }
+
+      const double right_pair_error = std::abs(ranges[p0] - ranges[p1]);
+      const double left_pair_error = std::abs(ranges[p2] - ranges[p3]);
+      if (right_pair_error >= dock_feature_pair_max_range_difference_ ||
+        left_pair_error >= dock_feature_pair_max_range_difference_)
+      {
+        continue;
+      }
+
+      const double angular_balance =
+        std::abs(static_cast<double>(p1 - p0) - static_cast<double>(p3 - p2)) *
+        angle_increment;
+      const double score = right_pair_error + left_pair_error + angular_balance;
+      if (score < best_score) {
+        best_score = score;
+        best_match = points;
+      }
+    }
+
+    return best_match;
+  }
+
+  geometry_msgs::msg::Point dock_laser_point(
+    const sensor_msgs::msg::LaserScan & scan,
+    size_t scan_index,
+    float range) const
+  {
+    const double angle =
+      static_cast<double>(scan.angle_min) +
+      static_cast<double>(scan_index) * static_cast<double>(scan.angle_increment);
+    geometry_msgs::msg::Point point;
+    point.x = static_cast<double>(range) * std::cos(angle);
+    point.y = static_cast<double>(range) * std::sin(angle);
+    return point;
+  }
+
+  std::optional<ChargingHubDetection> calculate_charging_hub_detection(
+    const sensor_msgs::msg::LaserScan & scan,
+    const std::vector<float> & ranges,
+    size_t scan_begin,
+    const std::array<size_t, 4> & feature_indices) const
+  {
+    const size_t right_index = feature_indices[0];
+    const size_t left_index = feature_indices[3];
+    const auto right = dock_laser_point(scan, scan_begin + right_index, ranges[right_index]);
+    const auto left = dock_laser_point(scan, scan_begin + left_index, ranges[left_index]);
+
+    const double tangent_x = left.x - right.x;
+    const double tangent_y = left.y - right.y;
+    const double feature_width = std::hypot(tangent_x, tangent_y);
+    if (feature_width < dock_feature_min_width_ || feature_width > dock_feature_max_width_) {
+      return std::nullopt;
+    }
+
+    const double center_x = (left.x + right.x) * 0.5;
+    const double center_y = (left.y + right.y) * 0.5;
+    double normal_x = -tangent_y / feature_width;
+    double normal_y = tangent_x / feature_width;
+    if (normal_x * -center_x + normal_y * -center_y < 0.0) {
+      normal_x = -normal_x;
+      normal_y = -normal_y;
+    }
+
+    ChargingHubDetection detection;
+    detection.dock_pose.header = scan.header;
+    detection.dock_pose.pose.position.x = center_x;
+    detection.dock_pose.pose.position.y = center_y;
+    detection.dock_pose.pose.orientation = quaternion_from_yaw(std::atan2(normal_y, normal_x));
+    detection.left_feature = left;
+    detection.right_feature = right;
+
+    const double pair_error =
+      std::abs(ranges[feature_indices[0]] - ranges[feature_indices[1]]) +
+      std::abs(ranges[feature_indices[2]] - ranges[feature_indices[3]]);
+    detection.confidence = std::clamp(1.0 - pair_error / 0.16, 0.0, 1.0);
+    return detection;
+  }
+
+  std::optional<ChargingHubDetection> detect_flat_charging_face(
+    const sensor_msgs::msg::LaserScan & scan,
+    const std::vector<float> & ranges,
+    size_t scan_begin) const
+  {
+    if (!dock_flat_plate_detection_enabled_ || ranges.empty()) {
+      return std::nullopt;
+    }
+
+    std::vector<geometry_msgs::msg::Point> points;
+    points.reserve(ranges.size());
+    for (size_t index = 0; index < ranges.size(); ++index) {
+      const float range = ranges[index];
+      if (range <= 0.0F) {
+        continue;
+      }
+
+      const size_t scan_index = scan_begin + index;
+      const double angle =
+        static_cast<double>(scan.angle_min) +
+        static_cast<double>(scan_index) * static_cast<double>(scan.angle_increment);
+      if (std::abs(normalize_angle(angle - dock_flat_plate_center_angle_)) >
+        dock_flat_plate_half_angle_)
+      {
+        continue;
+      }
+
+      points.push_back(dock_laser_point(scan, scan_index, range));
+    }
+
+    if (points.size() < static_cast<size_t>(dock_flat_plate_min_points_)) {
+      return std::nullopt;
+    }
+
+    double center_x = 0.0;
+    double center_y = 0.0;
+    for (const auto & point : points) {
+      center_x += point.x;
+      center_y += point.y;
+    }
+    center_x /= static_cast<double>(points.size());
+    center_y /= static_cast<double>(points.size());
+
+    double covariance_xx = 0.0;
+    double covariance_xy = 0.0;
+    double covariance_yy = 0.0;
+    for (const auto & point : points) {
+      const double dx = point.x - center_x;
+      const double dy = point.y - center_y;
+      covariance_xx += dx * dx;
+      covariance_xy += dx * dy;
+      covariance_yy += dy * dy;
+    }
+    covariance_xx /= static_cast<double>(points.size());
+    covariance_xy /= static_cast<double>(points.size());
+    covariance_yy /= static_cast<double>(points.size());
+
+    if (covariance_xx + covariance_yy <= std::numeric_limits<double>::epsilon()) {
+      return std::nullopt;
+    }
+
+    const double tangent_yaw = 0.5 * std::atan2(
+      2.0 * covariance_xy, covariance_xx - covariance_yy);
+    const double tangent_x = std::cos(tangent_yaw);
+    const double tangent_y = std::sin(tangent_yaw);
+    double normal_x = -tangent_y;
+    double normal_y = tangent_x;
+    if (normal_x * -center_x + normal_y * -center_y < 0.0) {
+      normal_x = -normal_x;
+      normal_y = -normal_y;
+    }
+
+    double minimum_projection = std::numeric_limits<double>::max();
+    double maximum_projection = std::numeric_limits<double>::lowest();
+    double squared_normal_error_sum = 0.0;
+    for (const auto & point : points) {
+      const double dx = point.x - center_x;
+      const double dy = point.y - center_y;
+      const double tangent_projection = dx * tangent_x + dy * tangent_y;
+      minimum_projection = std::min(minimum_projection, tangent_projection);
+      maximum_projection = std::max(maximum_projection, tangent_projection);
+      const double normal_error = dx * normal_x + dy * normal_y;
+      squared_normal_error_sum += normal_error * normal_error;
+    }
+
+    const double feature_width = maximum_projection - minimum_projection;
+    if (feature_width < dock_feature_min_width_ || feature_width > dock_feature_max_width_) {
+      return std::nullopt;
+    }
+
+    const double rms_error = std::sqrt(
+      squared_normal_error_sum / static_cast<double>(points.size()));
+    if (rms_error > dock_flat_plate_max_rms_error_) {
+      return std::nullopt;
+    }
+
+    double pose_center_x = center_x;
+    double pose_center_y = center_y;
+    const double ray_x = std::cos(dock_flat_plate_center_angle_);
+    const double ray_y = std::sin(dock_flat_plate_center_angle_);
+    const double ray_cross_tangent = ray_x * tangent_y - ray_y * tangent_x;
+    if (std::abs(ray_cross_tangent) > std::numeric_limits<double>::epsilon()) {
+      const double ray_distance =
+        (center_x * tangent_y - center_y * tangent_x) / ray_cross_tangent;
+      const double intersection_x = ray_distance * ray_x;
+      const double intersection_y = ray_distance * ray_y;
+      const double intersection_projection =
+        (intersection_x - center_x) * tangent_x + (intersection_y - center_y) * tangent_y;
+      constexpr double projection_margin = 0.05;
+      if (std::isfinite(ray_distance) && ray_distance > 0.0 &&
+        ray_distance <= dock_detection_max_range_ &&
+        intersection_projection >= minimum_projection - projection_margin &&
+        intersection_projection <= maximum_projection + projection_margin)
+      {
+        pose_center_x = intersection_x;
+        pose_center_y = intersection_y;
+      }
+    }
+    if (dock_flat_plate_lock_normal_to_center_angle_) {
+      normal_x = -ray_x;
+      normal_y = -ray_y;
+    } else if (normal_x * -pose_center_x + normal_y * -pose_center_y < 0.0) {
+      normal_x = -normal_x;
+      normal_y = -normal_y;
+    }
+
+    geometry_msgs::msg::Point right;
+    right.x = center_x + tangent_x * minimum_projection;
+    right.y = center_y + tangent_y * minimum_projection;
+    geometry_msgs::msg::Point left;
+    left.x = center_x + tangent_x * maximum_projection;
+    left.y = center_y + tangent_y * maximum_projection;
+
+    ChargingHubDetection detection;
+    detection.dock_pose.header = scan.header;
+    detection.dock_pose.pose.position.x = pose_center_x;
+    detection.dock_pose.pose.position.y = pose_center_y;
+    detection.dock_pose.pose.orientation = quaternion_from_yaw(std::atan2(normal_y, normal_x));
+    detection.left_feature = left;
+    detection.right_feature = right;
+    detection.confidence = std::clamp(
+      1.0 - rms_error / dock_flat_plate_max_rms_error_, 0.0, 1.0);
+    return detection;
+  }
+
+  std::optional<ChargingHubDetection> detect_charging_hub(
+    const sensor_msgs::msg::LaserScan & scan) const
+  {
+    if (scan.header.frame_id.empty()) {
+      return std::nullopt;
+    }
+
+    size_t begin = 0;
+    size_t end = 0;
+    if (!get_dock_scan_window(scan, begin, end)) {
+      return std::nullopt;
+    }
+
+    const auto ranges = filter_and_interpolate_dock_ranges(scan, begin, end);
+    const auto mutation_indices = find_dock_mutation_points(ranges);
+    const auto match = match_charging_hub_pattern(
+      ranges, mutation_indices, std::abs(static_cast<double>(scan.angle_increment)));
+    if (match.has_value()) {
+      const auto pattern_detection = calculate_charging_hub_detection(scan, ranges, begin, *match);
+      if (pattern_detection.has_value()) {
+        return pattern_detection;
+      }
+    }
+
+    return detect_flat_charging_face(scan, ranges, begin);
+  }
+
+  void start_dock_detection()
+  {
+    clear_charge_markers();
+
+    std::lock_guard<std::mutex> lock(dock_detection_mutex_);
+    dock_detection_samples_.clear();
+    dock_detection_received_scans_.store(0, std::memory_order_relaxed);
+    dock_detection_fresh_scans_.store(0, std::memory_order_relaxed);
+    dock_detection_pattern_matches_.store(0, std::memory_order_relaxed);
+    ++dock_detection_sequence_;
+    dock_detection_enabled_.store(true, std::memory_order_relaxed);
+  }
+
+  void stop_dock_detection()
+  {
+    dock_detection_enabled_.store(false, std::memory_order_relaxed);
+    dock_detection_cv_.notify_all();
+  }
+
+  void apply_charge_marker_lifetime(visualization_msgs::msg::Marker & marker) const
+  {
+    const int64_t lifetime_ms = charge_marker_lifetime_.count();
+    if (lifetime_ms <= 0) {
+      marker.lifetime.sec = 0;
+      marker.lifetime.nanosec = 0;
+      return;
+    }
+
+    marker.lifetime.sec = static_cast<int32_t>(lifetime_ms / 1000);
+    marker.lifetime.nanosec =
+      static_cast<uint32_t>((lifetime_ms % 1000) * 1000000LL);
+  }
+
+  void clear_charge_markers()
+  {
+    if (!charge_marker_enabled_ || !charge_marker_publisher_) {
+      return;
+    }
+
+    visualization_msgs::msg::Marker marker;
+    marker.header.frame_id = map_frame_;
+    marker.header.stamp = now();
+    marker.action = visualization_msgs::msg::Marker::DELETE;
+
+    marker.ns = "charge_hub_points";
+    marker.id = 0;
+    charge_marker_publisher_->publish(marker);
+
+    marker.ns = "dynamic_charge_pose";
+    marker.id = 1;
+    charge_marker_publisher_->publish(marker);
+  }
+
+  void publish_charge_hub_marker(const ChargingHubDetection & detection)
+  {
+    if (!charge_marker_enabled_ || !charge_marker_publisher_) {
+      return;
+    }
+    visualization_msgs::msg::Marker marker;
+    marker.header = detection.dock_pose.header;
+    marker.ns = "charge_hub_points";
+    marker.id = 0;
+    marker.type = visualization_msgs::msg::Marker::POINTS;
+    marker.action = visualization_msgs::msg::Marker::ADD;
+    marker.pose.orientation.w = 1.0;
+    marker.scale.x = 0.04;
+    marker.scale.y = 0.04;
+    marker.color.r = 154.0F / 255.0F;
+    marker.color.g = 50.0F / 255.0F;
+    marker.color.b = 205.0F / 255.0F;
+    marker.color.a = 1.0F;
+    apply_charge_marker_lifetime(marker);
+
+    marker.points.reserve(3);
+    marker.points.push_back(detection.left_feature);
+    marker.points.push_back(detection.right_feature);
+    marker.points.push_back(detection.dock_pose.pose.position);
+
+    charge_marker_publisher_->publish(marker);
+  }
+
+  void publish_dynamic_charge_pose_marker(
+    const geometry_msgs::msg::PoseStamped & charge_pose)
+  {
+    if (!charge_marker_enabled_ || !charge_marker_publisher_) {
+      return;
+    }
+
+    visualization_msgs::msg::Marker marker;
+    marker.header = charge_pose.header;
+    if (rclcpp::Time(marker.header.stamp).nanoseconds() <= 0) {
+      marker.header.stamp = now();
+    }
+    marker.ns = "dynamic_charge_pose";
+    marker.id = 1;
+    marker.type = visualization_msgs::msg::Marker::ARROW;
+    marker.action = visualization_msgs::msg::Marker::ADD;
+    marker.pose = charge_pose.pose;
+    marker.scale.x = 0.35;
+    marker.scale.y = 0.06;
+    marker.scale.z = 0.06;
+    marker.color.r = 50.0F / 255.0F;
+    marker.color.g = 200.0F / 255.0F;
+    marker.color.b = 150.0F / 255.0F;
+    marker.color.a = 1.0F;
+    apply_charge_marker_lifetime(marker);
+
+    charge_marker_publisher_->publish(marker);
+  }
+
+  void add_dock_detection_sample(const ChargingHubDetection & detection)
+  {
+    {
+      std::lock_guard<std::mutex> lock(dock_detection_mutex_);
+      if (!dock_detection_enabled_.load(std::memory_order_relaxed)) {
+        return;
+      }
+      if (!dock_detection_samples_.empty() &&
+        dock_detection_samples_.back().dock_pose.header.frame_id !=
+        detection.dock_pose.header.frame_id)
+      {
+        dock_detection_samples_.clear();
+      }
+      if (!dock_detection_samples_.empty()) {
+        const rclcpp::Time latest_stamp(
+          dock_detection_samples_.back().dock_pose.header.stamp);
+        const rclcpp::Time incoming_stamp(detection.dock_pose.header.stamp);
+        if (incoming_stamp <= latest_stamp) {
+          return;
+        }
+      }
+      dock_detection_samples_.push_back(detection);
+      while (dock_detection_samples_.size() >
+        static_cast<size_t>(dock_detection_max_samples_))
+      {
+        dock_detection_samples_.pop_front();
+      }
+      ++dock_detection_sequence_;
+    }
+    dock_detection_cv_.notify_all();
+  }
+
+  bool stable_dock_pose_locked(geometry_msgs::msg::PoseStamped & pose) const
+  {
+    if (dock_detection_samples_.size() < static_cast<size_t>(dock_detection_min_samples_)) {
+      return false;
+    }
+
+    std::vector<double> x_values;
+    std::vector<double> y_values;
+    x_values.reserve(dock_detection_samples_.size());
+    y_values.reserve(dock_detection_samples_.size());
+    double sin_sum = 0.0;
+    double cos_sum = 0.0;
+    for (const auto & sample : dock_detection_samples_) {
+      x_values.push_back(sample.dock_pose.pose.position.x);
+      y_values.push_back(sample.dock_pose.pose.position.y);
+      const double yaw = yaw_from_quaternion(sample.dock_pose.pose.orientation);
+      sin_sum += std::sin(yaw);
+      cos_sum += std::cos(yaw);
+    }
+
+    const double x = median(x_values);
+    const double y = median(y_values);
+    const double yaw = std::atan2(sin_sum, cos_sum);
+    for (const auto & sample : dock_detection_samples_) {
+      const double position_spread = std::hypot(
+        sample.dock_pose.pose.position.x - x,
+        sample.dock_pose.pose.position.y - y);
+      const double yaw_spread = std::abs(normalize_angle(
+        yaw_from_quaternion(sample.dock_pose.pose.orientation) - yaw));
+      if (position_spread > dock_detection_max_position_spread_ ||
+        yaw_spread > dock_detection_max_yaw_spread_)
+      {
+        return false;
+      }
+    }
+
+    pose = dock_detection_samples_.back().dock_pose;
+    pose.pose.position.x = x;
+    pose.pose.position.y = y;
+    pose.pose.orientation = quaternion_from_yaw(yaw);
+    return true;
+  }
+
+  bool wait_for_stable_dock_pose(
+    geometry_msgs::msg::PoseStamped & pose,
+    std::string & result_message)
+  {
+    const auto deadline = std::chrono::steady_clock::now() + dock_detection_timeout_;
+    std::unique_lock<std::mutex> lock(dock_detection_mutex_);
+
+    while (dock_detection_enabled_.load(std::memory_order_relaxed)) {
+      if (stable_dock_pose_locked(pose)) {
+        result_message =
+          "stable charging hub detected with " +
+          std::to_string(dock_detection_samples_.size()) + " samples";
+        return true;
+      }
+
+      if (!dock_detection_cv_.wait_until(
+          lock, deadline,
+          [this, sequence = dock_detection_sequence_]() {
+            return dock_detection_sequence_ != sequence ||
+                   !dock_detection_enabled_.load(std::memory_order_relaxed);
+          }))
+      {
+        break;
+      }
+    }
+
+    result_message =
+      "charging hub detection timed out; topic=" + dock_scan_topic_ +
+      " received_scans=" +
+      std::to_string(dock_detection_received_scans_.load(std::memory_order_relaxed)) +
+      " fresh_scans=" +
+      std::to_string(dock_detection_fresh_scans_.load(std::memory_order_relaxed)) +
+      " pattern_matches=" +
+      std::to_string(dock_detection_pattern_matches_.load(std::memory_order_relaxed)) +
+      " valid_samples=" + std::to_string(dock_detection_samples_.size());
+    return false;
+  }
+
+  bool transform_dock_pose_to_map(
+    const geometry_msgs::msg::PoseStamped & dock_pose,
+    geometry_msgs::msg::PoseStamped & map_pose,
+    std::string & result_message)
+  {
+    if (dock_pose.header.frame_id == map_frame_) {
+      map_pose = dock_pose;
+      return true;
+    }
+
+    const auto apply_transform = [this, &dock_pose, &map_pose](
+      const geometry_msgs::msg::TransformStamped & transform) {
+        const double transform_yaw = yaw_from_quaternion(transform.transform.rotation);
+        const double cos_yaw = std::cos(transform_yaw);
+        const double sin_yaw = std::sin(transform_yaw);
+        const double source_x = dock_pose.pose.position.x;
+        const double source_y = dock_pose.pose.position.y;
+
+        map_pose = dock_pose;
+        map_pose.header.frame_id = map_frame_;
+        map_pose.header.stamp = transform.header.stamp;
+        map_pose.pose.position.x =
+          transform.transform.translation.x + cos_yaw * source_x - sin_yaw * source_y;
+        map_pose.pose.position.y =
+          transform.transform.translation.y + sin_yaw * source_x + cos_yaw * source_y;
+        map_pose.pose.orientation = quaternion_from_yaw(normalize_angle(
+          transform_yaw + yaw_from_quaternion(dock_pose.pose.orientation)));
+      };
+
+    std::string stamped_lookup_error;
+    try {
+      const auto transform = tf_buffer_->lookupTransform(
+        map_frame_, dock_pose.header.frame_id, rclcpp::Time(dock_pose.header.stamp),
+        rclcpp::Duration::from_nanoseconds(200000000));
+      apply_transform(transform);
+      return true;
+    } catch (const tf2::TransformException & exception) {
+      stamped_lookup_error = exception.what();
+    }
+
+    try {
+      const auto latest_transform = tf_buffer_->lookupTransform(
+        map_frame_, dock_pose.header.frame_id, rclcpp::Time(0),
+        rclcpp::Duration::from_nanoseconds(200000000));
+      RCLCPP_WARN(
+        get_logger(),
+        "charging hub pose timestamped transform failed, using latest transform: %s",
+        stamped_lookup_error.c_str());
+      apply_transform(latest_transform);
+      return true;
+    } catch (const tf2::TransformException & exception) {
+      result_message =
+        "failed to transform charging hub pose from " + dock_pose.header.frame_id +
+        " to " + map_frame_ + ": " + stamped_lookup_error +
+        "; latest transform fallback failed: " + exception.what();
+      return false;
+    }
+  }
+
+  bool make_dynamic_charge_pose(
+    const geometry_msgs::msg::PoseStamped & dock_pose,
+    const geometry_msgs::msg::PoseStamped & nominal_charge_pose,
+    geometry_msgs::msg::PoseStamped & dynamic_charge_pose,
+    std::string & result_message) const
+  {
+    double outward_yaw = yaw_from_quaternion(dock_pose.pose.orientation);
+    double normal_x = std::cos(outward_yaw);
+    double normal_y = std::sin(outward_yaw);
+    const double nominal_dx =
+      nominal_charge_pose.pose.position.x - dock_pose.pose.position.x;
+    const double nominal_dy =
+      nominal_charge_pose.pose.position.y - dock_pose.pose.position.y;
+    const double nominal_hub_distance = std::hypot(nominal_dx, nominal_dy);
+    if (nominal_hub_distance > dock_nominal_hub_max_distance_) {
+      result_message =
+        "detected charging hub is too far from nominal charge target: " +
+        std::to_string(nominal_hub_distance);
+      return false;
+    }
+    double nominal_offset = nominal_dx * normal_x + nominal_dy * normal_y;
+    if (nominal_offset < 0.0) {
+      outward_yaw = normalize_angle(outward_yaw + M_PI);
+      normal_x = -normal_x;
+      normal_y = -normal_y;
+      nominal_offset = -nominal_offset;
+    }
+
+    const double base_to_hub_offset =
+      dock_base_to_hub_offset_ > 0.0 ? dock_base_to_hub_offset_ : nominal_offset;
+    if (!std::isfinite(base_to_hub_offset) ||
+      base_to_hub_offset < dock_base_to_hub_offset_min_ ||
+      base_to_hub_offset > dock_base_to_hub_offset_max_)
+    {
+      result_message =
+        "charging hub offset is outside configured limits: " +
+        std::to_string(base_to_hub_offset);
+      return false;
+    }
+
+    dynamic_charge_pose = nominal_charge_pose;
+    dynamic_charge_pose.header.stamp = now();
+    dynamic_charge_pose.pose.position.x =
+      dock_pose.pose.position.x + normal_x * base_to_hub_offset;
+    dynamic_charge_pose.pose.position.y =
+      dock_pose.pose.position.y + normal_y * base_to_hub_offset;
+
+    const double nominal_yaw = yaw_from_quaternion(nominal_charge_pose.pose.orientation);
+    const double outward_error = std::abs(normalize_angle(outward_yaw - nominal_yaw));
+    const double inward_yaw = normalize_angle(outward_yaw + M_PI);
+    const double inward_error = std::abs(normalize_angle(inward_yaw - nominal_yaw));
+    const double target_yaw = outward_error <= inward_error ? outward_yaw : inward_yaw;
+    dynamic_charge_pose.pose.orientation = quaternion_from_yaw(target_yaw);
+
+    const double position_correction = std::hypot(
+      dynamic_charge_pose.pose.position.x - nominal_charge_pose.pose.position.x,
+      dynamic_charge_pose.pose.position.y - nominal_charge_pose.pose.position.y);
+    const double yaw_correction = std::abs(normalize_angle(target_yaw - nominal_yaw));
+    if (position_correction > dock_dynamic_max_position_correction_) {
+      result_message =
+        "detected charging pose exceeds position correction limit: " +
+        std::to_string(position_correction);
+      return false;
+    }
+    if (yaw_correction > dock_dynamic_max_yaw_correction_) {
+      result_message =
+        "detected charging pose exceeds yaw correction limit: " +
+        std::to_string(yaw_correction);
+      return false;
+    }
+
+    result_message =
+      "dynamic charging pose accepted: position_correction=" +
+      std::to_string(position_correction) +
+      " yaw_correction=" + std::to_string(yaw_correction);
+    return true;
+  }
+
   void handle_auto_dock_request(
     const std::shared_ptr<SetString::Request> request,
     std::shared_ptr<SetString::Response> response)
@@ -861,8 +1808,8 @@ private:
       return;
     }
 
-    geometry_msgs::msg::PoseStamped charge_pose;
-    if (!resolve_target_pose(dock_charge_target_, charge_pose, response->result)) {
+    geometry_msgs::msg::PoseStamped nominal_charge_pose;
+    if (!resolve_target_pose(dock_charge_target_, nominal_charge_pose, response->result)) {
       const std::string failure_message = response->result;
       RCLCPP_WARN(
         get_logger(),
@@ -873,6 +1820,64 @@ private:
       response->success = false;
       return;
     }
+
+    publish_state("docking_recognition", dock_charge_target_);
+    RCLCPP_INFO(
+      get_logger(), "auto_dock charging hub recognition started: topic=%s",
+      dock_scan_topic_.c_str());
+    start_dock_detection();
+    geometry_msgs::msg::PoseStamped detected_dock_pose;
+    const bool detected = wait_for_stable_dock_pose(detected_dock_pose, response->result);
+    stop_dock_detection();
+    if (!detected) {
+      const std::string failure_message = response->result;
+      RCLCPP_WARN(
+        get_logger(),
+        "auto_dock charging hub recognition failed: reason=%s",
+        failure_message.c_str());
+      set_dock_state(DockState::Free);
+      response->result = failure_message;
+      response->success = false;
+      return;
+    }
+
+    geometry_msgs::msg::PoseStamped map_dock_pose;
+    if (!transform_dock_pose_to_map(detected_dock_pose, map_dock_pose, response->result)) {
+      const std::string failure_message = response->result;
+      RCLCPP_WARN(
+        get_logger(),
+        "auto_dock charging hub transform failed: reason=%s",
+        failure_message.c_str());
+      set_dock_state(DockState::Free);
+      response->result = failure_message;
+      response->success = false;
+      return;
+    }
+
+    geometry_msgs::msg::PoseStamped charge_pose;
+    if (!make_dynamic_charge_pose(
+        map_dock_pose, nominal_charge_pose, charge_pose, response->result))
+    {
+      const std::string failure_message = response->result;
+      RCLCPP_WARN(
+        get_logger(),
+        "auto_dock dynamic charge pose rejected: reason=%s",
+        failure_message.c_str());
+      set_dock_state(DockState::Free);
+      response->result = failure_message;
+      response->success = false;
+      return;
+    }
+    publish_dynamic_charge_pose_marker(charge_pose);
+
+    RCLCPP_INFO(
+      get_logger(),
+      "auto_dock charging hub recognized: hub_x=%.3f hub_y=%.3f hub_yaw=%.3f "
+      "target_x=%.3f target_y=%.3f target_yaw=%.3f",
+      map_dock_pose.pose.position.x, map_dock_pose.pose.position.y,
+      yaw_from_quaternion(map_dock_pose.pose.orientation),
+      charge_pose.pose.position.x, charge_pose.pose.position.y,
+      yaw_from_quaternion(charge_pose.pose.orientation));
 
     publish_state("docking_approach", dock_charge_target_);
     if (!follow_path_to_pose_with_collision_monitor_disabled(
@@ -1823,6 +2828,7 @@ private:
   std::string nav_mode_;
   std::string amcl_pose_topic_;
   std::string scan_topic_;
+  std::string dock_scan_topic_;
   std::string filtered_odom_topic_;
   std::string raw_odom_topic_;
   std::string odom_topic_;
@@ -1853,13 +2859,45 @@ private:
   std::string collision_monitor_toggle_service_;
   std::string dock_staging_target_;
   std::string dock_charge_target_;
+  std::string charge_marker_topic_;
+  bool charge_marker_enabled_{true};
   std::string docking_controller_id_;
   std::string docking_goal_checker_id_;
   std::string undock_goal_checker_id_;
   std::string docking_progress_checker_id_;
   std::string auto_dock_staging_behavior_tree_;
+  int dock_detection_min_samples_{5};
+  int dock_detection_max_samples_{12};
+  double dock_detection_max_range_{2.0};
+  double dock_scan_min_angle_{-3.141592653589793};
+  double dock_scan_max_angle_{3.141592653589793};
+  double dock_interpolation_max_difference_{0.02};
+  double dock_mutation_min_jump_{0.025};
+  double dock_mutation_max_jump_{0.065};
+  double dock_feature_pair_max_angle_{0.12217304763960307};
+  double dock_feature_outer_check_angle_{0.08726646259971647};
+  double dock_feature_pair_max_range_difference_{0.08};
+  double dock_feature_min_width_{0.10};
+  double dock_feature_max_width_{1.00};
+  bool dock_flat_plate_detection_enabled_{true};
+  double dock_flat_plate_center_angle_{0.0};
+  double dock_flat_plate_half_angle_{0.20};
+  int dock_flat_plate_min_points_{8};
+  double dock_flat_plate_max_rms_error_{0.03};
+  bool dock_flat_plate_lock_normal_to_center_angle_{true};
+  double dock_detection_max_position_spread_{0.05};
+  double dock_detection_max_yaw_spread_{0.08726646259971647};
+  double dock_dynamic_max_position_correction_{0.30};
+  double dock_dynamic_max_yaw_correction_{0.2617993877991494};
+  double dock_nominal_hub_max_distance_{1.0};
+  double dock_base_to_hub_offset_min_{0.05};
+  double dock_base_to_hub_offset_max_{1.0};
+  double dock_base_to_hub_offset_{-1.0};
   std::chrono::milliseconds action_wait_timeout_{3000};
   std::chrono::milliseconds dock_motion_timeout_{30000};
+  std::chrono::milliseconds dock_detection_timeout_{3000};
+  std::chrono::milliseconds dock_detection_scan_freshness_{500};
+  std::chrono::milliseconds charge_marker_lifetime_{0};
   std::chrono::milliseconds startup_delay_{3000};
   std::chrono::milliseconds input_freshness_timeout_{500};
   std::chrono::milliseconds startup_poll_period_{5};
@@ -1876,6 +2914,14 @@ private:
   bool navigation_ready_{false};
   DockState dock_state_{DockState::Free};
   std::mutex operation_mutex_;
+  std::atomic_bool dock_detection_enabled_{false};
+  mutable std::mutex dock_detection_mutex_;
+  std::condition_variable dock_detection_cv_;
+  std::deque<ChargingHubDetection> dock_detection_samples_;
+  uint64_t dock_detection_sequence_{0};
+  std::atomic<uint64_t> dock_detection_received_scans_{0};
+  std::atomic<uint64_t> dock_detection_fresh_scans_{0};
+  std::atomic<uint64_t> dock_detection_pattern_matches_{0};
 
   StartupState startup_state_{StartupState::BootDelay};
   std::chrono::steady_clock::time_point startup_deadline_;
@@ -1909,8 +2955,10 @@ private:
   rclcpp::Publisher<std_msgs::msg::String>::SharedPtr target_state_publisher_;
   rclcpp::Publisher<std_msgs::msg::String>::SharedPtr dock_state_publisher_;
   rclcpp::Publisher<geometry_msgs::msg::PoseWithCovarianceStamped>::SharedPtr initial_pose_publisher_;
+  rclcpp::Publisher<visualization_msgs::msg::Marker>::SharedPtr charge_marker_publisher_;
   rclcpp::Subscription<GoalStatusArray>::SharedPtr action_status_subscription_;
   rclcpp::Subscription<sensor_msgs::msg::LaserScan>::SharedPtr scan_subscription_;
+  rclcpp::Subscription<sensor_msgs::msg::LaserScan>::SharedPtr dock_scan_subscription_;
   rclcpp::Subscription<nav_msgs::msg::Odometry>::SharedPtr odom_subscription_;
   rclcpp::Subscription<nav_msgs::msg::OccupancyGrid>::SharedPtr map_subscription_;
   rclcpp::Subscription<geometry_msgs::msg::PoseWithCovarianceStamped>::SharedPtr
