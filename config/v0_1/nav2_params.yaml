@@ -90,7 +90,6 @@ bt_navigator:  # 调度规划、控制和恢复行为，决定导航任务流程
 controller_server:  # 把全局路径转换成实时速度命令。
   ros__parameters:
     # controller_server 负责把全局路径转换成实时速度命令。
-    # v0_1 在这里RPP 风格，目标是减少横移，优先先转向再前进。
     use_sim_time: False
     controller_frequency: 20.0  # 提高后速度命令更新更及时，但会增加 CPU 占用。
     # costmap_update_timeout 表示等待局部代价地图更新的最长时间。
@@ -131,9 +130,11 @@ controller_server:  # 把全局路径转换成实时速度命令。
     FollowPath:  # 控制底盘沿全局路径运动，并在局部障碍前实时调整轨迹。
       # 支持全向底盘的 MPPI 算法配置
       plugin: "nav2_mppi_controller::MPPIController"
-      time_steps: 56
+      time_steps: 70
       model_dt: 0.05
       batch_size: 2000
+      prune_distance: 3.5
+      motion_model: "Omni"
 
       # 运动学采样方差（决定了轨迹搜索的动作幅度范围）
       vx_std: 0.25
@@ -143,8 +144,8 @@ controller_server:  # 把全局路径转换成实时速度命令。
       # 显式声明所有速度边界，匹配 smoother 参数，避免终端报警告
       vx_max: 0.95
       vx_min: -0.15
-      vy_max: 0.55
-      vy_min: -0.35
+      vy_max: 0.25
+      vy_min: -0.25
       wz_max: 1.2
       wz_min: -1.0
 
@@ -157,7 +158,7 @@ controller_server:  # 把全局路径转换成实时速度命令。
       # 规范的 Critics 打分器列表声明
       critics:
         - ConstraintCritic
-        - ObstaclesCritic
+        - CostCritic
         - GoalCritic
         - GoalAngleCritic
         - PathAlignCritic
@@ -170,35 +171,60 @@ controller_server:  # 把全局路径转换成实时速度命令。
         enabled: true
         cost_power: 1
         cost_weight: 4.0      # 硬防撞底线权重
-      ObstaclesCritic:
+      # ObstaclesCritic:
+      #   enabled: true
+      #   cost_power: 1
+      #   repulsion_weight: 4.0
+      #   collision_margin_distance: 0.05
+      #   cost_weight: 15.5      # 动态绕障的软排斥权重，实现丝滑绕行的核心参数
+      CostCritic:
         enabled: true
         cost_power: 1
-        repulsion_weight: 4.0
-        cost_weight: 8.0      # 动态绕障的软排斥权重，实现丝滑绕行的核心参数
+        cost_weight: 3.81
+        near_collision_cost: 50
+        critical_cost: 300.0
+        consider_footprint: true
+        collision_cost: 1000000.0
+        near_goal_distance: 1.0
+        trajectory_point_step: 2
       GoalCritic:
         enabled: true
         cost_power: 1
-        cost_weight: 8.0      # 趋向目标的绝对位置权重
+        cost_weight: 5.0      # 趋向目标的绝对位置权重
+        threshold_to_consider: 2.5
       GoalAngleCritic:
         enabled: true
         cost_power: 1
-        cost_weight: 5.0      # 终点姿态对齐权重
+        cost_weight: 3.0      # 终点姿态对齐权重
+        threshold_to_consider: 0.5
       PathAlignCritic:
         enabled: true
         cost_power: 1
-        cost_weight: 15.0     # 紧贴全局路径的权重
+        cost_weight: 14.0     # 紧贴全局路径的权重
+        max_path_occupancy_ratio: 0.05
+        trajectory_point_step: 4
+        threshold_to_consider: 0.5
+        offset_from_furthest: 20
+        use_path_orientation: false
       PathFollowCritic:
         enabled: true
         cost_power: 1
-        cost_weight: 15.0     # 顺着路径方向移动的权重
+        cost_weight: 5.0     # 顺着路径方向移动的权重
+        offset_from_furthest: 5
+        threshold_to_consider: 2.2
       PathAngleCritic:
         enabled: true
         cost_power: 1
-        cost_weight: 3.0      # 注释：设为极低！允许车头不强求对齐路径方向，实现斜向移动绕开障碍
+        cost_weight: 2.0      # 注释：设为极低！允许车头不强求对齐路径方向，实现斜向移动绕开障碍
+        offset_from_furthest: 4
+        threshold_to_consider: 0.5
+        max_angle_to_furthest: 1.0
+        mode: 0
       PreferForwardCritic:
         enabled: true
         cost_power: 1
-        cost_weight: 15.0      # 注释：设为极低！取消对非横移运动的偏好，彻底释放麦轮螃蟹步天赋
+        cost_weight: 5.0      # 注释：设为极低！取消对非横移运动的偏好，彻底释放麦轮螃蟹步天赋
+        threshold_to_consider: 0.5
 
 planner_server:  # 生成从当前位置到目标点的全局路径。
   ros__parameters:
@@ -271,10 +297,10 @@ velocity_smoother:  # 限制速度突变，让最终速度输出更平顺。
     enable_stamped_cmd_vel: True
     cmd_vel_in_topic: "cmd_vel_nav"
     cmd_vel_out_topic: "cmd_vel_smoothed"
-    max_velocity: [0.95, 0.55, 1.4]  # 限制最高线速度和角速度，防止控制命令过激。
-    min_velocity: [-0.15, -0.35, -1.0]  # 限制最小速度，保留必要的倒退和反向转动能力。
-    max_accel: [0.5, 0.3, 1.0]  # 限制加速度，减少起停冲击和轨迹抖动。
-    max_decel: [-1.5, -0.6, -2.0]  # 限制减速度，避免刹停过猛。
+    max_velocity: [0.95, 0.25, 1.4]  # 限制最高线速度和角速度，防止控制命令过激。
+    min_velocity: [-0.15, -0.25, -1.0]  # 限制最小速度，保留必要的倒退和反向转动能力。
+    max_accel: [0.8, 0.3, 1.0]  # 限制加速度，减少起停冲击和轨迹抖动。
+    max_decel: [-3.5, -0.6, -2.0]  # 限制减速度，避免刹停过猛。
     odom_topic: "/odometry/filtered"
     odom_duration: 0.1  # 用更短时间窗估计速度，响应更快但更敏感。
     deadband_velocity: [0.0, 0.01, 0.001]  # 压掉很小的残余速度，减少末端抖动。
@@ -334,7 +360,7 @@ collision_monitor:  # 在最终出速度前做碰撞裁决，必要时停车或�
       type: "polygon"
       action_type: "approach"
       footprint_topic: "/local_costmap/published_footprint"
-      time_before_collision: 0.50  # 越大越保守，越早开始降速。
+      time_before_collision: 0.35  # 越大越保守，越早开始降速。
       simulation_time_step: 0.05  # 仿真步长越小，碰撞预测越细但越耗算力。
       min_points: 8  # 需要更多障碍点才触发，减少误减速。
       visualize: false
@@ -416,9 +442,9 @@ local_costmap:  # 给局部控制提供实时避障约束，直接影响底盘�
       global_frame: odom
       robot_base_frame: base_footprint
       rolling_window: true
-      width: 3  # 控制局部窗口大小，越大看得越远但越保守。
-      height: 3  # 控制局部窗口大小，越大看得越远但越保守。
-      resolution: 0.05  # 控制代价地图分辨率，越小越精细但越耗算力。
+      width: 6  # 控制局部窗口大小，越大看得越远但越保守。
+      height: 6 # 控制局部窗口大小，越大看得越远但越保守。
+      resolution: 0.1  # 控制代价地图分辨率，越小越精细但越耗算力。
       # 局部代价地图必须和全局代价地图使用同一套真实车体外轮廓。
       footprint: "[[0.31, 0.30], [0.31, -0.30], [-0.33, -0.30], [-0.33, 0.30]]"
       footprint_padding: 0.02  # 在车体外再留一圈安全裕量。
@@ -449,5 +475,5 @@ local_costmap:  # 给局部控制提供实时避障约束，直接影响底盘�
       inflation_layer:  # 把障碍外扩成安全缓冲区。
         plugin: "nav2_costmap_2d::InflationLayer"
         # 进一步缩小局部膨胀并提高衰减，让障碍代价不要在整块窗口里铺得太厚。
-        cost_scaling_factor: 2.0  # 控制障碍代价衰减速度，越大越不容易贴障。
-        inflation_radius: 0.80  # 控制障碍外扩到多大范围，越大越保守。
+        cost_scaling_factor: 5.0  # 控制障碍代价衰减速度，越大越不容易贴障。
+        inflation_radius: 0.50  # 控制障碍外扩到多大范围，越大越保守。
