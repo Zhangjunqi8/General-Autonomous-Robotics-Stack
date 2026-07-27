@@ -130,19 +130,19 @@ controller_server:  # 把全局路径转换成实时速度命令。
     FollowPath:  # 控制底盘沿全局路径运动，并在局部障碍前实时调整轨迹。
       # 支持全向底盘的 MPPI 算法配置
       plugin: "nav2_mppi_controller::MPPIController"
-      time_steps: 56
+      time_steps: 70
       model_dt: 0.05
       batch_size: 2000
-      prune_distance: 3.0
+      prune_distance: 3.5
       motion_model: "Omni"
 
       # 运动学采样方差（决定了轨迹搜索的动作幅度范围）
-      vx_std: 0.70
+      vx_std: 0.25
       vy_std: 0.15
       wz_std: 0.20
 
       # 显式声明所有速度边界，匹配 smoother 参数，避免终端报警告
-      vx_max: 1.20
+      vx_max: 0.95
       vx_min: -0.15
       vy_max: 0.25
       vy_min: -0.25
@@ -297,10 +297,10 @@ velocity_smoother:  # 限制速度突变，让最终速度输出更平顺。
     enable_stamped_cmd_vel: True
     cmd_vel_in_topic: "cmd_vel_nav"
     cmd_vel_out_topic: "cmd_vel_smoothed"
-    max_velocity: [1.30, 0.25, 1.4]  # 限制最高线速度和角速度，防止控制命令过激。
+    max_velocity: [0.95, 0.25, 1.4]  # 限制最高线速度和角速度，防止控制命令过激。
     min_velocity: [-0.15, -0.25, -1.0]  # 限制最小速度，保留必要的倒退和反向转动能力。
-    max_accel: [1.6, 0.3, 1.0]  # 限制加速度，减少起停冲击和轨迹抖动。
-    max_decel: [-2.8, -0.6, -2.0]  # 限制减速度，避免刹停过猛。
+    max_accel: [0.8, 0.3, 1.0]  # 限制加速度，减少起停冲击和轨迹抖动。
+    max_decel: [-3.5, -0.6, -2.0]  # 限制减速度，避免刹停过猛。
     odom_topic: "/odometry/filtered"
     odom_duration: 0.1  # 用更短时间窗估计速度，响应更快但更敏感。
     deadband_velocity: [0.0, 0.01, 0.001]  # 压掉很小的残余速度，减少末端抖动。
