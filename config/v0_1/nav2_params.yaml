@@ -1,9 +1,11 @@
-# HanMole v0_1 Nav2 麦克纳姆导航基线配置
+# HanMole V12：原始控制参数 + SmacPlanner2D 开阔全局路径版（ROS 2 Jazzy）
+# 本版仅修改 planner_server 和 global_costmap 的全局膨胀梯度；
+# controller_server、local_costmap、velocity_smoother、collision_monitor 等全部保持原文件参数。
 #
 # 设计目标：
 # 1. AMCL 仍按全向底盘建模，避免定位层因为麦克纳姆横移而退化。
 # 2. 但导航控制层收敛为“先转向、再前进/倒车、末端对正”的非横移观感。
-# 3. 全局规划使用 Navfn，局部控制使用 Regulated Pure Pursuit。
+# 3. 全局规划改用代价感知的 SmacPlanner2D，局部控制保持原来的 MPPI Omni。
 # 4. 速度命令链路固定为 cmd_vel_nav -> cmd_vel_smoothed -> /cmd_vel。
 # 5. collision_monitor 保留基础 stop / approach 保护，不再使用全向 velocity polygons。
 
@@ -144,8 +146,8 @@ controller_server:  # 把全局路径转换成实时速度命令。
       # 显式声明所有速度边界，匹配 smoother 参数，避免终端报警告
       vx_max: 0.95
       vx_min: -0.15
-      vy_max: 0.25
-      vy_min: -0.25
+      vy_max: 0.10
+      vy_min: -0.10
       wz_max: 1.2
       wz_min: -1.0
 
@@ -229,17 +231,32 @@ controller_server:  # 把全局路径转换成实时速度命令。
 planner_server:  # 生成从当前位置到目标点的全局路径。
   ros__parameters:
     # planner_server 负责生成全局路径。
-    # 使用 Navfn，更接近传统车式导航的全局路径形态。
+    # V12 仅将 NavFn 换成 SmacPlanner2D；通过连续全局代价梯度优先选择宽敞区域。
     use_sim_time: False
-    expected_planner_frequency: 20.0  # 提高后重新规划更及时，但会增加 CPU 占用。
+    # 该参数是规划耗时的期望频率，不决定行为树实际重规划频率。
+    expected_planner_frequency: 2.0
     planner_plugins: ["GridBased"]
 
     GridBased:
-      # NavfnPlanner 输出标准 2D 栅格路径，不再显式规划横移 motion primitive。
-      plugin: "nav2_navfn_planner::NavfnPlanner"
-      tolerance: 0.5  # 放宽目标附近的可接受区域，减少末端反复修正。
-      use_astar: true  # 启用 A* 可减少无效扩展，提升规划效率。
-      allow_unknown: true  # 允许从未知区域中找路径，扩大可达范围。
+      plugin: "nav2_smac_planner::SmacPlanner2D"
+      tolerance: 0.5
+      downsample_costmap: false
+      downsampling_factor: 1
+      allow_unknown: true
+      max_iterations: 1000000
+      max_on_approach_iterations: 1000
+      terminal_checking_interval: 5000
+      max_planning_time: 2.0
+      # 官方默认 2.0；提高到 4.0，使搜索更重视低代价、宽敞、通道中央区域。
+      cost_travel_multiplier: 4.0
+      use_final_approach_orientation: false
+      smoother:
+        max_iterations: 1000
+        w_smooth: 0.30
+        w_data: 0.20
+        tolerance: 1.0e-10
+        do_refinement: true
+        refinement_num: 2
 
 behavior_server:  # 执行原地旋转、后退和直行等恢复动作。
   ros__parameters:
@@ -426,9 +443,10 @@ global_costmap:  # 给全局规划提供绕障约束，决定全局路径如何�
 
       inflation_layer:  # 把障碍外扩成安全缓冲区。
         plugin: "nav2_costmap_2d::InflationLayer"
-        # 全局膨胀半径稍大一些，绕障余量。
-        cost_scaling_factor: 4.0  # 控制障碍代价衰减速度，越大越不容易贴障。
-        inflation_radius: 0.60  # 控制障碍外扩到多大范围，越大越保守。
+        # 只调整全局层：建立更宽、更平缓的软代价梯度，供 Smac2D 区分墙边和通道中央。
+        # cost_scaling_factor 越小衰减越缓；inflation_radius 只扩展软代价，不改变真实 footprint。
+        cost_scaling_factor: 2.5
+        inflation_radius: 0.90
 
 local_costmap:  # 给局部控制提供实时避障约束，直接影响底盘是否敢继续走。
   local_costmap:
