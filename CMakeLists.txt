@@ -57,27 +57,47 @@ target_include_directories(nav2_target_gateway_node PRIVATE include)
 target_link_libraries(nav2_target_gateway_node target_repository)
 ament_target_dependencies(nav2_target_gateway_node ${navigation_node_dependencies})
 
-add_library(cmd_vel_nav_accelerator_mux_component SHARED
-  src/cmd_vel_nav_accelerator_mux_node.cpp
+add_library(cmd_vel_boost_source_component SHARED
+  src/cmd_vel_boost_source_node.cpp
 )
-target_include_directories(cmd_vel_nav_accelerator_mux_component PUBLIC include)
+target_include_directories(cmd_vel_boost_source_component PUBLIC include)
 ament_target_dependencies(
-  cmd_vel_nav_accelerator_mux_component
+  cmd_vel_boost_source_component
   geometry_msgs
-  nav_msgs
+  rclcpp
+  rclcpp_components
+  sensor_msgs
+)
+rclcpp_components_register_nodes(
+  cmd_vel_boost_source_component
+  "hanmole_navigation::CmdVelBoostSourceNode"
+)
+
+add_executable(cmd_vel_boost_source_node src/cmd_vel_boost_source_main.cpp)
+target_include_directories(cmd_vel_boost_source_node PRIVATE include)
+target_link_libraries(cmd_vel_boost_source_node cmd_vel_boost_source_component)
+ament_target_dependencies(cmd_vel_boost_source_node rclcpp)
+
+add_library(cmd_vel_mux_stamped_component SHARED
+  src/cmd_vel_mux_stamped_node.cpp
+)
+target_include_directories(cmd_vel_mux_stamped_component PUBLIC include)
+ament_target_dependencies(
+  cmd_vel_mux_stamped_component
+  geometry_msgs
   rclcpp
   rclcpp_components
   std_msgs
 )
 rclcpp_components_register_nodes(
-  cmd_vel_nav_accelerator_mux_component
-  "hanmole_navigation::CmdVelNavAcceleratorMuxNode"
+  cmd_vel_mux_stamped_component
+  "hanmole_navigation::CmdVelMuxStampedNode"
 )
 
-add_executable(cmd_vel_nav_accelerator_mux_node src/cmd_vel_nav_accelerator_mux_main.cpp)
-target_include_directories(cmd_vel_nav_accelerator_mux_node PRIVATE include)
-target_link_libraries(cmd_vel_nav_accelerator_mux_node cmd_vel_nav_accelerator_mux_component)
-ament_target_dependencies(cmd_vel_nav_accelerator_mux_node rclcpp)
+add_executable(cmd_vel_mux_stamped_node src/cmd_vel_mux_stamped_main.cpp)
+target_include_directories(cmd_vel_mux_stamped_node PRIVATE include)
+target_link_libraries(cmd_vel_mux_stamped_node cmd_vel_mux_stamped_component)
+ament_target_dependencies(cmd_vel_mux_stamped_node rclcpp)
 
 set(navigation_share_dirs
   launch
@@ -109,8 +129,10 @@ install(
 install(
   TARGETS
     target_repository
-    cmd_vel_nav_accelerator_mux_component
-    cmd_vel_nav_accelerator_mux_node
+    cmd_vel_boost_source_component
+    cmd_vel_boost_source_node
+    cmd_vel_mux_stamped_component
+    cmd_vel_mux_stamped_node
     target_catalog_publisher_node
     nav2_target_gateway_node
   ARCHIVE DESTINATION lib
@@ -141,17 +163,21 @@ if(BUILD_TESTING)
     PYTHON_EXECUTABLE "${Python3_EXECUTABLE}"
   )
   ament_add_gtest(
-    test_cmd_vel_nav_accelerator_mux
-    test/test_cmd_vel_nav_accelerator_mux.cpp
+    test_cmd_vel_boost_chain
+    test/test_cmd_vel_boost_chain.cpp
   )
-  if(TARGET test_cmd_vel_nav_accelerator_mux)
-    target_include_directories(test_cmd_vel_nav_accelerator_mux PRIVATE include)
-    target_link_libraries(test_cmd_vel_nav_accelerator_mux cmd_vel_nav_accelerator_mux_component)
+  if(TARGET test_cmd_vel_boost_chain)
+    target_include_directories(test_cmd_vel_boost_chain PRIVATE include)
+    target_link_libraries(
+      test_cmd_vel_boost_chain
+      cmd_vel_boost_source_component
+      cmd_vel_mux_stamped_component
+    )
     ament_target_dependencies(
-      test_cmd_vel_nav_accelerator_mux
+      test_cmd_vel_boost_chain
       geometry_msgs
-      nav_msgs
       rclcpp
+      sensor_msgs
       std_msgs
     )
   endif()
