@@ -40,17 +40,19 @@ def _navigation_remappings() -> list[tuple[str, str]]:
     return [('/tf', 'tf'), ('/tf_static', 'tf_static')]
 
 
-def _navigation_lifecycle_nodes() -> list[str]:
-    return [
+def _navigation_lifecycle_nodes(use_cmd_vel_accelerator: bool = False) -> list[str]:
+    node_names = [
         'controller_server',
         'smoother_server',
         'planner_server',
         'behavior_server',
-        'velocity_smoother',
         'collision_monitor',
         'bt_navigator',
         'waypoint_follower',
     ]
+    if not use_cmd_vel_accelerator:
+        node_names.insert(4, 'velocity_smoother')
+    return node_names
 
 
 def _build_configured_nav2_params(
@@ -60,6 +62,7 @@ def _build_configured_nav2_params(
     autostart,
     odom_topic,
     map_yaml='',
+    use_cmd_vel_accelerator=False,
 ):
     rewritten_source = ReplaceString(
         source_file=params_file,
@@ -72,6 +75,8 @@ def _build_configured_nav2_params(
         'controller_server.ros__parameters.odom_topic': odom_topic,
         'velocity_smoother.ros__parameters.odom_topic': odom_topic,
     }
+    if use_cmd_vel_accelerator:
+        param_rewrites['cmd_vel_nav_accelerator_mux.ros__parameters.odom_topic'] = odom_topic
     if map_yaml:
         param_rewrites['map_server.ros__parameters.yaml_filename'] = map_yaml
     return ParameterFile(
@@ -85,9 +90,48 @@ def _build_configured_nav2_params(
     )
 
 
-def _create_navigation_node_actions(configured_params, use_sim_time, use_respawn, log_level):
+def _create_velocity_processing_node_action(
+    configured_params,
+    use_respawn,
+    log_level,
+    remappings,
+    use_cmd_vel_accelerator,
+):
+    if use_cmd_vel_accelerator:
+        return Node(
+            package='hanmole_navigation',
+            executable='cmd_vel_nav_accelerator_mux_node',
+            name='cmd_vel_nav_accelerator_mux',
+            output='screen',
+            respawn=use_respawn,
+            respawn_delay=2.0,
+            parameters=[configured_params],
+            arguments=['--ros-args', '--log-level', log_level],
+            remappings=remappings,
+        )
+
+    return Node(
+        package='nav2_velocity_smoother',
+        executable='velocity_smoother',
+        name='velocity_smoother',
+        output='screen',
+        respawn=use_respawn,
+        respawn_delay=2.0,
+        parameters=[configured_params],
+        arguments=['--ros-args', '--log-level', log_level],
+        remappings=remappings + [('cmd_vel', 'cmd_vel_nav')],
+    )
+
+
+def _create_navigation_node_actions(
+    configured_params,
+    use_sim_time,
+    use_respawn,
+    log_level,
+    use_cmd_vel_accelerator,
+):
     remappings = _navigation_remappings()
-    lifecycle_node_names = _navigation_lifecycle_nodes()
+    lifecycle_node_names = _navigation_lifecycle_nodes(use_cmd_vel_accelerator)
     controller_action = Node(
         package='nav2_controller',
         executable='controller_server',
@@ -158,16 +202,12 @@ def _create_navigation_node_actions(configured_params, use_sim_time, use_respawn
                 arguments=['--ros-args', '--log-level', log_level],
                 remappings=remappings,
             ),
-            Node(
-                package='nav2_velocity_smoother',
-                executable='velocity_smoother',
-                name='velocity_smoother',
-                output='screen',
-                respawn=use_respawn,
-                respawn_delay=2.0,
-                parameters=[configured_params],
-                arguments=['--ros-args', '--log-level', log_level],
-                remappings=remappings + [('cmd_vel', 'cmd_vel_nav')],
+            _create_velocity_processing_node_action(
+                configured_params,
+                use_respawn,
+                log_level,
+                remappings,
+                use_cmd_vel_accelerator,
             ),
             Node(
                 package='nav2_collision_monitor',
@@ -201,6 +241,7 @@ def _create_navigation_composable_actions(
     container_name,
     use_sim_time,
     log_level,
+    use_cmd_vel_accelerator,
 ):
     remappings = _navigation_remappings()
     composable_nodes = [
@@ -247,31 +288,46 @@ def _create_navigation_composable_actions(
             remappings=remappings,
         ),
         ComposableNode(
-            package='nav2_velocity_smoother',
-            plugin='nav2_velocity_smoother::VelocitySmoother',
-            name='velocity_smoother',
-            parameters=[configured_params],
-            remappings=remappings + [('cmd_vel', 'cmd_vel_nav')],
-        ),
-        ComposableNode(
             package='nav2_collision_monitor',
             plugin='nav2_collision_monitor::CollisionMonitor',
             name='collision_monitor',
             parameters=[configured_params],
             remappings=remappings,
         ),
-            ComposableNode(
-                package='nav2_lifecycle_manager',
-                plugin='nav2_lifecycle_manager::LifecycleManager',
-                name='lifecycle_manager_navigation',
-                parameters=[
-                    {
-                        'autostart': False,
-                        'node_names': _navigation_lifecycle_nodes(),
-                    }
-                ],
-            ),
+        ComposableNode(
+            package='nav2_lifecycle_manager',
+            plugin='nav2_lifecycle_manager::LifecycleManager',
+            name='lifecycle_manager_navigation',
+            parameters=[
+                {
+                    'autostart': False,
+                    'node_names': _navigation_lifecycle_nodes(use_cmd_vel_accelerator),
+                }
+            ],
+        ),
     ]
+    if use_cmd_vel_accelerator:
+        composable_nodes.insert(
+            6,
+            ComposableNode(
+                package='hanmole_navigation',
+                plugin='hanmole_navigation::CmdVelNavAcceleratorMuxNode',
+                name='cmd_vel_nav_accelerator_mux',
+                parameters=[configured_params],
+                remappings=remappings,
+            ),
+        )
+    else:
+        composable_nodes.insert(
+            6,
+            ComposableNode(
+                package='nav2_velocity_smoother',
+                plugin='nav2_velocity_smoother::VelocitySmoother',
+                name='velocity_smoother',
+                parameters=[configured_params],
+                remappings=remappings + [('cmd_vel', 'cmd_vel_nav')],
+            ),
+        )
     return GroupAction(
         condition=IfCondition(LaunchConfiguration('use_composition')),
         actions=[
@@ -289,6 +345,7 @@ def _launch_setup(context, *args, **kwargs):
     robot_version = LaunchConfiguration('robot_version').perform(context)
     if robot_version not in ('v0_1', 'v0_2'):
         raise RuntimeError('robot_version must be one of: v0_1, v0_2')
+    use_cmd_vel_accelerator = robot_version == 'v0_1'
     map_yaml = LaunchConfiguration('map').perform(context)
     if not map_yaml:
         raise RuntimeError('localization requires a non-empty map yaml file')
@@ -302,7 +359,6 @@ def _launch_setup(context, *args, **kwargs):
     namespace_value = context.launch_configurations.get('namespace', '')
     use_namespace_value = context.launch_configurations.get('use_namespace', 'False')
     use_sim_time = LaunchConfiguration('use_sim_time')
-    nav_mode = LaunchConfiguration('nav_mode')
     autostart = LaunchConfiguration('autostart')
     use_respawn = LaunchConfiguration('use_respawn')
     log_level = LaunchConfiguration('log_level')
@@ -319,6 +375,7 @@ def _launch_setup(context, *args, **kwargs):
         autostart,
         odom_topic,
         map_yaml,
+        use_cmd_vel_accelerator,
     )
     configured_params_path = str(configured_params.evaluate(context))
     nav2_launch_dir = os.path.join(nav2_share, 'launch')
@@ -372,13 +429,20 @@ def _launch_setup(context, *args, **kwargs):
                         'container_name': container_name_value,
                     }.items(),
                 ),
-                _create_navigation_node_actions(configured_params, use_sim_time, use_respawn, log_level),
+                _create_navigation_node_actions(
+                    configured_params,
+                    use_sim_time,
+                    use_respawn,
+                    log_level,
+                    use_cmd_vel_accelerator,
+                ),
                 _create_navigation_composable_actions(
                     configured_params,
                     namespace,
                     container_name,
                     use_sim_time,
                     log_level,
+                    use_cmd_vel_accelerator,
                 ),
                 Node(
                     package='hanmole_navigation',

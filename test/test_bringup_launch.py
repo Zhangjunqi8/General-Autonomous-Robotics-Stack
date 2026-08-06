@@ -169,14 +169,15 @@ def test_navigation_launch_passes_nav_mode_to_gateway_node():
     assert "'nav_mode': LaunchConfiguration('nav_mode')" in source
 
 
-def test_nav2_bringup_enables_velocity_smoother_and_collision_monitor():
+def test_v0_1_navigation_launch_uses_accelerator_mux_before_collision_monitor():
     bringup_path = Path(__file__).resolve().parents[1] / 'launch' / 'navigation_launch.py'
     source = bringup_path.read_text(encoding='utf-8')
 
-    assert "package='nav2_velocity_smoother'" in source
-    assert "name='velocity_smoother'" in source
+    assert "executable='cmd_vel_nav_accelerator_mux_node'" in source
+    assert "name='cmd_vel_nav_accelerator_mux'" in source
     assert "package='nav2_collision_monitor'" in source
     assert "name='collision_monitor'" in source
+    assert "use_cmd_vel_accelerator = robot_version == 'v0_1'" in source
 
 
 def test_public_bringup_no_longer_declares_cmd_vel_adapter_toggle():

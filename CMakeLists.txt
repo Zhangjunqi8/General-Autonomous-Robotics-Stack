@@ -18,6 +18,7 @@ find_package(nav_msgs REQUIRED)
 find_package(pluginlib REQUIRED)
 find_package(rclcpp REQUIRED)
 find_package(rclcpp_action REQUIRED)
+find_package(rclcpp_components REQUIRED)
 find_package(rclcpp_lifecycle REQUIRED)
 find_package(sensor_msgs REQUIRED)
 find_package(std_msgs REQUIRED)
@@ -56,6 +57,28 @@ target_include_directories(nav2_target_gateway_node PRIVATE include)
 target_link_libraries(nav2_target_gateway_node target_repository)
 ament_target_dependencies(nav2_target_gateway_node ${navigation_node_dependencies})
 
+add_library(cmd_vel_nav_accelerator_mux_component SHARED
+  src/cmd_vel_nav_accelerator_mux_node.cpp
+)
+target_include_directories(cmd_vel_nav_accelerator_mux_component PUBLIC include)
+ament_target_dependencies(
+  cmd_vel_nav_accelerator_mux_component
+  geometry_msgs
+  nav_msgs
+  rclcpp
+  rclcpp_components
+  std_msgs
+)
+rclcpp_components_register_nodes(
+  cmd_vel_nav_accelerator_mux_component
+  "hanmole_navigation::CmdVelNavAcceleratorMuxNode"
+)
+
+add_executable(cmd_vel_nav_accelerator_mux_node src/cmd_vel_nav_accelerator_mux_main.cpp)
+target_include_directories(cmd_vel_nav_accelerator_mux_node PRIVATE include)
+target_link_libraries(cmd_vel_nav_accelerator_mux_node cmd_vel_nav_accelerator_mux_component)
+ament_target_dependencies(cmd_vel_nav_accelerator_mux_node rclcpp)
+
 set(navigation_share_dirs
   launch
   config
@@ -86,6 +109,8 @@ install(
 install(
   TARGETS
     target_repository
+    cmd_vel_nav_accelerator_mux_component
+    cmd_vel_nav_accelerator_mux_node
     target_catalog_publisher_node
     nav2_target_gateway_node
   ARCHIVE DESTINATION lib
@@ -94,6 +119,7 @@ install(
 )
 
 if(BUILD_TESTING)
+  find_package(ament_cmake_gtest REQUIRED)
   find_package(ament_lint_auto REQUIRED)
   set(ament_cmake_copyright_FOUND TRUE)
   set(ament_cmake_cpplint_FOUND TRUE)
@@ -114,6 +140,21 @@ if(BUILD_TESTING)
     test/test_target_gateway_contract.py
     PYTHON_EXECUTABLE "${Python3_EXECUTABLE}"
   )
+  ament_add_gtest(
+    test_cmd_vel_nav_accelerator_mux
+    test/test_cmd_vel_nav_accelerator_mux.cpp
+  )
+  if(TARGET test_cmd_vel_nav_accelerator_mux)
+    target_include_directories(test_cmd_vel_nav_accelerator_mux PRIVATE include)
+    target_link_libraries(test_cmd_vel_nav_accelerator_mux cmd_vel_nav_accelerator_mux_component)
+    ament_target_dependencies(
+      test_cmd_vel_nav_accelerator_mux
+      geometry_msgs
+      nav_msgs
+      rclcpp
+      std_msgs
+    )
+  endif()
 endif()
 
 ament_package()
