@@ -84,11 +84,11 @@ CmdVelBoostSourceNode::CmdVelBoostSourceNode(const rclcpp::NodeOptions & options
   scan_topic_ = declare_parameter<std::string>("scan_topic", "/scan");
   scan_timeout_ = declare_parameter<double>("scan_timeout", 0.30);
 
-  config_.boost_start_linear_x = declare_parameter<double>("boost_start_linear_x", 0.70);
+  config_.boost_start_linear_x = declare_parameter<double>("boost_start_linear_x", 0.60);
   config_.boost_gain = declare_parameter<double>("boost_gain", 4.00);
   config_.max_linear_x = declare_parameter<double>("max_linear_x", 1.20);
-  config_.max_abs_linear_y = declare_parameter<double>("max_abs_linear_y", 0.03);
-  config_.max_abs_angular_z = declare_parameter<double>("max_abs_angular_z", 0.10);
+  config_.max_abs_linear_y = declare_parameter<double>("max_abs_linear_y", 0.10);
+  config_.max_abs_angular_z = declare_parameter<double>("max_abs_angular_z", 0.15);
   config_.corridor_lookahead_m = declare_parameter<double>("corridor_lookahead_m", 3.0);
   config_.corridor_half_width = declare_parameter<double>("corridor_half_width", 0.40);
   validateConfig();

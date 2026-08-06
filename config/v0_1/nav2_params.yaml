@@ -16,11 +16,11 @@ cmd_vel_boost_source:  # 只决定是否发布高优先级 fast 速度源。
     output_topic: "cmd_vel_nav_fast"
     scan_topic: "/scan"
     scan_timeout: 0.30
-    boost_start_linear_x: 0.70
+    boost_start_linear_x: 0.60
     boost_gain: 4.00
     max_linear_x: 1.20
-    max_abs_linear_y: 0.03
-    max_abs_angular_z: 0.10
+    max_abs_linear_y: 0.10
+    max_abs_angular_z: 0.15
     corridor_lookahead_m: 3.0
     # corridor_half_width 由 navigation_launch.py 从 costmap footprint 左右边界推导并注入。
 
@@ -350,7 +350,7 @@ velocity_smoother:  # 限制速度突变，让最终速度输出更平顺。
     cmd_vel_out_topic: "cmd_vel_smoothed"
     max_velocity: [1.20, 0.28, 1.4]  # x 最高速度放宽到 boost 上限，y 保留避障余量。
     min_velocity: [-0.15, -0.28, -1.0]  # 保留必要的倒退、横移避障和反向转动能力。
-    max_accel: [6.0, 0.45, 1.0]  # x 轴再放宽一些，保住 boost 峰值。
+    max_accel: [3.0, 0.45, 1.0]  # x 轴再放宽一些，保住 boost 峰值。
     max_decel: [-6.0, -0.9, -2.0]  # x 轴刹停仍保留缓冲，避免完全放开。
     odom_topic: "/odometry/filtered"
     odom_duration: 0.1  # 用更短时间窗估计速度，响应更快但更敏感。

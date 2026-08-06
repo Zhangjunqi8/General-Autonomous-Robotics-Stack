@@ -14,11 +14,11 @@ namespace hanmole_navigation
 
 struct BoostSourceConfig
 {
-  double boost_start_linear_x{0.70};
+  double boost_start_linear_x{0.60};
   double boost_gain{4.00};
   double max_linear_x{1.20};
-  double max_abs_linear_y{0.03};
-  double max_abs_angular_z{0.10};
+  double max_abs_linear_y{0.10};
+  double max_abs_angular_z{0.15};
   double corridor_lookahead_m{3.0};
   double corridor_half_width{0.40};
 };

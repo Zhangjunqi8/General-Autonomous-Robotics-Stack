@@ -68,6 +68,27 @@ TEST(CmdVelBoostSource, boostLinearXIsContinuousFromConfiguredStart)
   EXPECT_DOUBLE_EQ(hanmole_navigation::boostLinearX(1.05, 0.70, 4.00, 1.20), 1.20);
 }
 
+TEST(CmdVelBoostSource, defaultThresholdsAllowSmallPathTrackingCorrections)
+{
+  hanmole_navigation::BoostSourceConfig config;
+  const auto clear_scan = makeScan({4.0F}, 0.0, 0.1);
+
+  const auto earlier_boost = hanmole_navigation::makeBoostedCommandIfAllowed(
+    makeCommand(0.65, 0.0, 0.0),
+    clear_scan,
+    config);
+  ASSERT_TRUE(earlier_boost.has_value());
+  EXPECT_GT(earlier_boost->twist.linear.x, 0.65);
+
+  const auto corrected_path_boost = hanmole_navigation::makeBoostedCommandIfAllowed(
+    makeCommand(0.75, 0.08, 0.12),
+    clear_scan,
+    config);
+  ASSERT_TRUE(corrected_path_boost.has_value());
+  EXPECT_DOUBLE_EQ(corrected_path_boost->twist.linear.x, config.max_linear_x);
+  EXPECT_DOUBLE_EQ(config.max_linear_x, 1.20);
+}
+
 TEST(CmdVelBoostSource, boostRequiresStraightFastCommandAndClearCorridor)
 {
   hanmole_navigation::BoostSourceConfig config;

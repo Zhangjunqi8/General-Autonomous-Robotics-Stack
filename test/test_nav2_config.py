@@ -38,8 +38,11 @@ def test_v0_1_nav2_profile_uses_filtered_odom_and_fused_scan_contracts():
     assert boost_source['input_topic'] == 'cmd_vel_nav'
     assert boost_source['output_topic'] == 'cmd_vel_nav_fast'
     assert boost_source['scan_topic'] == '/scan'
-    assert boost_source['boost_start_linear_x'] == 0.70
+    assert boost_source['boost_start_linear_x'] == 0.60
     assert boost_source['boost_gain'] == 4.00
+    assert boost_source['max_linear_x'] == 1.20
+    assert boost_source['max_abs_linear_y'] == 0.10
+    assert boost_source['max_abs_angular_z'] == 0.15
     assert boost_source['corridor_lookahead_m'] == 3.0
     assert 'corridor_half_width' not in boost_source
     assert mux['output_topic'] == 'cmd_vel_nav_muxed'
