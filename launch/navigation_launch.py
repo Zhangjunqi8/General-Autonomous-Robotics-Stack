@@ -82,17 +82,17 @@ def _corridor_half_width_from_nav2_params(params_file: str) -> float:
 
 
 def _navigation_lifecycle_nodes(use_cmd_vel_boost_chain: bool = False) -> list[str]:
+    del use_cmd_vel_boost_chain
     node_names = [
         'controller_server',
         'smoother_server',
         'planner_server',
         'behavior_server',
+        'velocity_smoother',
         'collision_monitor',
         'bt_navigator',
         'waypoint_follower',
     ]
-    if not use_cmd_vel_boost_chain:
-        node_names.insert(4, 'velocity_smoother')
     return node_names
 
 
@@ -164,6 +164,17 @@ def _create_velocity_processing_node_actions(
                 parameters=[configured_params],
                 arguments=['--ros-args', '--log-level', log_level],
                 remappings=remappings,
+            ),
+            Node(
+                package='nav2_velocity_smoother',
+                executable='velocity_smoother',
+                name='velocity_smoother',
+                output='screen',
+                respawn=use_respawn,
+                respawn_delay=2.0,
+                parameters=[configured_params],
+                arguments=['--ros-args', '--log-level', log_level],
+                remappings=remappings + [('cmd_vel', 'cmd_vel_nav_muxed')],
             ),
         ]
 
@@ -385,6 +396,16 @@ def _create_navigation_composable_actions(
                 name='cmd_vel_mux_stamped',
                 parameters=[configured_params],
                 remappings=remappings,
+            ),
+        )
+        composable_nodes.insert(
+            8,
+            ComposableNode(
+                package='nav2_velocity_smoother',
+                plugin='nav2_velocity_smoother::VelocitySmoother',
+                name='velocity_smoother',
+                parameters=[configured_params],
+                remappings=remappings + [('cmd_vel', 'cmd_vel_nav_muxed')],
             ),
         )
     else:

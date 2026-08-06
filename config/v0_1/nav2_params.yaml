@@ -6,7 +6,7 @@
 # 1. AMCL 仍按全向底盘建模，避免定位层因为麦克纳姆横移而退化。
 # 2. 但导航控制层收敛为“先转向、再前进/倒车、末端对正”的非横移观感。
 # 3. 全局规划改用代价感知的 SmacPlanner2D，局部控制保持原来的 MPPI Omni。
-# 4. 速度命令链路固定为 cmd_vel_nav -> boost_source/mux -> cmd_vel_smoothed -> /cmd_vel。
+# 4. 速度命令链路固定为 cmd_vel_nav -> boost_source/mux -> velocity_smoother -> cmd_vel_smoothed -> /cmd_vel。
 # 5. collision_monitor 保留基础 stop / approach 保护，不再使用全向 velocity polygons。
 
 
@@ -26,7 +26,7 @@ cmd_vel_boost_source:  # 只决定是否发布高优先级 fast 速度源。
 
 cmd_vel_mux_stamped:  # 只做 priority + timeout 选择，选中消息原样转发。
   ros__parameters:
-    output_topic: "cmd_vel_smoothed"
+    output_topic: "cmd_vel_nav_muxed"
     active_topic: "cmd_vel_mux_stamped/active"
     publish_rate: 50.0
     input_names: ["nav_fast", "nav"]
@@ -34,7 +34,7 @@ cmd_vel_mux_stamped:  # 只做 priority + timeout 选择，选中消息原样转
       nav_fast:
         topic: "cmd_vel_nav_fast"
         priority: 100
-        timeout: 0.08
+        timeout: 0.25
       nav:
         topic: "cmd_vel_nav"
         priority: 10
@@ -131,7 +131,7 @@ controller_server:  # 把全局路径转换成实时速度命令。
     # 小于这些阈值的速度会被视为 0。
     # y 阈值设置得比 x 大，压掉残余侧移；真正绕障横移仍可通过。
     min_x_velocity_threshold: 0.001  # 压掉极小前后速度，避免底盘低速抖动。
-    min_y_velocity_threshold: 0.01  # 压掉残余侧移，保留绕障横移。
+    min_y_velocity_threshold: 0.02  # 压掉残余侧移，保留绕障横移。
     min_theta_velocity_threshold: 0.001  # 压掉极小角速度，避免末端轻微抖动。
     failure_tolerance: 0.3  # 短暂控制异常不会立刻中断，持续失败才触发恢复。
     publish_errors: True
@@ -165,7 +165,7 @@ controller_server:  # 把全局路径转换成实时速度命令。
       plugin: "nav2_mppi_controller::MPPIController"
       time_steps: 70
       model_dt: 0.05
-      batch_size: 3500
+      batch_size: 2000
       prune_distance: 3.5
       motion_model: "Omni"
 
@@ -336,20 +336,22 @@ smoother_server:  # 平滑全局路径，减少局部控制抖动。
 velocity_smoother:  # 限制速度突变，让最终速度输出更平顺。
   ros__parameters:
     # velocity_smoother 位于控制链路末端：
-    # v0_1 默认由 cmd_vel_mux_stamped 输出 cmd_vel_smoothed，再进入 collision_monitor。
+    # v0_1 默认由 cmd_vel_mux_stamped 输出 cmd_vel_nav_muxed，
+    # 再经 velocity_smoother 输出 cmd_vel_smoothed 后进入 collision_monitor。
     # 全向限幅：x 方向速度保持不变，y 方向只保留绕障速度。
     use_sim_time: False
-    smoothing_frequency: 35.0  # 提高后输出更连续，但会增加 CPU 占用。
-    # 使用闭环平滑，参考实际里程计速度而不是只按命令推演，减少停转时的过冲。
-    feedback: "CLOSED_LOOP"  # 使用实际里程计反馈修正速度，减少过冲。
+    smoothing_frequency: 50.0  # 提高后更容易跟上 fast 段，但会增加 CPU 占用。
+    # Open loop 直接以最后一次命令为状态，更适合保住 boost 段峰值。
+    feedback: "OPEN_LOOP"
     scale_velocities: False
     enable_stamped_cmd_vel: True
-    cmd_vel_in_topic: "cmd_vel_nav"
+    stamp_smoothed_velocity_with_smoothing_time: True
+    cmd_vel_in_topic: "cmd_vel_nav_muxed"
     cmd_vel_out_topic: "cmd_vel_smoothed"
-    max_velocity: [1.05, 0.28, 1.4]  # x 最高速度保持 0.95，y 保留避障余量。
+    max_velocity: [1.20, 0.28, 1.4]  # x 最高速度放宽到 boost 上限，y 保留避障余量。
     min_velocity: [-0.15, -0.28, -1.0]  # 保留必要的倒退、横移避障和反向转动能力。
-    max_accel: [2.5, 0.3, 1.0]  # y 加速度低于原配置，避免无障碍时横移过积极。
-    max_decel: [-4.0, -0.6, -2.0]  # y 减速度低于原配置，减少侧向急停抖动。
+    max_accel: [6.0, 0.45, 1.0]  # x 轴再放宽一些，保住 boost 峰值。
+    max_decel: [-6.0, -0.9, -2.0]  # x 轴刹停仍保留缓冲，避免完全放开。
     odom_topic: "/odometry/filtered"
     odom_duration: 0.1  # 用更短时间窗估计速度，响应更快但更敏感。
     deadband_velocity: [0.0, 0.01, 0.001]  # 压掉残余横移，保留绕障横移命令。

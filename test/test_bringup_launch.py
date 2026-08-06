@@ -185,6 +185,44 @@ def test_v0_1_navigation_launch_uses_boost_source_and_mux_before_collision_monit
     assert "use_cmd_vel_boost_chain = robot_version == 'v0_1'" in source
 
 
+def test_v0_1_navigation_launch_keeps_velocity_smoother_in_boost_chain():
+    module = _load_launch_module(
+        'launch/navigation_launch.py',
+        'hanmole_navigation_navigation_launch_velocity_smoother',
+    )
+
+    lifecycle_nodes = module._navigation_lifecycle_nodes(True)
+    assert lifecycle_nodes == [
+        'controller_server',
+        'smoother_server',
+        'planner_server',
+        'behavior_server',
+        'velocity_smoother',
+        'collision_monitor',
+        'bt_navigator',
+        'waypoint_follower',
+    ]
+
+    actions = module._create_velocity_processing_node_actions(
+        configured_params='mock_params',
+        use_respawn=False,
+        log_level='info',
+        remappings=[],
+        use_cmd_vel_boost_chain=True,
+    )
+    executables = [
+        _node_private_value(action, '_Node__node_executable')
+        for action in actions
+        if isinstance(action, Node)
+    ]
+
+    assert executables == [
+        'cmd_vel_boost_source_node',
+        'cmd_vel_mux_stamped_node',
+        'velocity_smoother',
+    ]
+
+
 def test_v0_1_boost_corridor_half_width_is_derived_from_nav2_footprint():
     module = _load_launch_module(
         'launch/navigation_launch.py',

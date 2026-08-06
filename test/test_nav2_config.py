@@ -42,14 +42,16 @@ def test_v0_1_nav2_profile_uses_filtered_odom_and_fused_scan_contracts():
     assert boost_source['boost_gain'] == 4.00
     assert boost_source['corridor_lookahead_m'] == 3.0
     assert 'corridor_half_width' not in boost_source
-    assert mux['output_topic'] == 'cmd_vel_smoothed'
+    assert mux['output_topic'] == 'cmd_vel_nav_muxed'
     assert mux['input_names'] == ['nav_fast', 'nav']
     assert mux['inputs']['nav_fast']['topic'] == 'cmd_vel_nav_fast'
     assert mux['inputs']['nav_fast']['priority'] == 100
-    assert mux['inputs']['nav_fast']['timeout'] == 0.08
+    assert mux['inputs']['nav_fast']['timeout'] == 0.25
     assert mux['inputs']['nav']['topic'] == 'cmd_vel_nav'
     assert mux['inputs']['nav']['priority'] == 10
     assert mux['inputs']['nav']['timeout'] == 0.20
+    assert velocity_smoother['cmd_vel_in_topic'] == 'cmd_vel_nav_muxed'
+    assert velocity_smoother['cmd_vel_out_topic'] == 'cmd_vel_smoothed'
     assert global_costmap['update_frequency'] == 1.0
     assert global_costmap['publish_frequency'] == 1.0
     expected_costmap_footprint = '[[0.31, 0.30], [0.31, -0.30], [-0.33, -0.30], [-0.33, 0.30]]'
@@ -112,11 +114,12 @@ def test_v0_1_nav2_profile_matches_current_mppi_omni_behavior():
     assert behavior_server['min_rotational_vel'] == 1.0
     assert behavior_server['rotational_acc_lim'] == 5.0
 
-    assert velocity_smoother['feedback'] == 'CLOSED_LOOP'
-    assert velocity_smoother['max_velocity'] == [1.05, 0.28, 1.4]
+    assert velocity_smoother['feedback'] == 'OPEN_LOOP'
+    assert velocity_smoother['stamp_smoothed_velocity_with_smoothing_time'] is True
+    assert velocity_smoother['max_velocity'] == [1.20, 0.28, 1.4]
     assert velocity_smoother['min_velocity'] == [-0.15, -0.28, -1.0]
-    assert velocity_smoother['max_accel'] == [1.8, 0.45, 1.0]
-    assert velocity_smoother['max_decel'] == [-3.5, -0.9, -2.0]
+    assert velocity_smoother['max_accel'] == [6.0, 0.45, 1.0]
+    assert velocity_smoother['max_decel'] == [-6.0, -0.9, -2.0]
     assert velocity_smoother['deadband_velocity'] == [0.0, 0.01, 0.001]
     assert velocity_smoother['velocity_timeout'] == 1.0
 
