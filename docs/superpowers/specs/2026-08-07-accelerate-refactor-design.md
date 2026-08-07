@@ -26,6 +26,7 @@ The refactor should preserve the current runtime behavior:
 - Standalone executable names remain `cmd_vel_boost_source_node` and `cmd_vel_mux_stamped_node`.
 - Component plugin class names remain `hanmole_navigation::CmdVelBoostSourceNode` and `hanmole_navigation::CmdVelMuxStampedNode`.
 - Existing topic defaults, parameter names, launch behavior, and tests remain behaviorally equivalent.
+- Constructor behavior and interface initialization remain equivalent: parameter declarations, default values, publisher/subscription creation, timer creation, QoS choices, callbacks, and startup active-state publication must match the current logic.
 
 ## Considered Approaches
 
@@ -111,3 +112,11 @@ If the workspace build cache has stale targets from removed files, run a clean p
 This refactor does not change acceleration math, obstacle checks, mux selection logic, topic defaults, parameter names, node names, or launch conditions.
 
 It also does not introduce a new runtime `accelerate_node` executable unless requested separately.
+
+## Acceptance Criteria
+
+- `cmd_vel_nav` acceleration behavior remains unchanged.
+- `CmdVelBoostSourceNode` keeps the same constructor name, node name, parameters, default values, subscriptions, publisher, scan timeout behavior, and boost publishing behavior.
+- `CmdVelMuxStampedNode` keeps the same constructor name, node name, parameters, default values, subscriptions, publishers, publish timer, active source publication behavior, and mux selection behavior.
+- Standalone launch and composable launch continue to use the existing executable and plugin names.
+- Tests that validate boost-chain helper behavior continue to pass after including `accelerate.hpp`.
