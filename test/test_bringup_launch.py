@@ -169,14 +169,73 @@ def test_navigation_launch_passes_nav_mode_to_gateway_node():
     assert "'nav_mode': LaunchConfiguration('nav_mode')" in source
 
 
-def test_nav2_bringup_enables_velocity_smoother_and_collision_monitor():
+def test_v0_1_navigation_launch_uses_boost_source_and_mux_before_collision_monitor():
     bringup_path = Path(__file__).resolve().parents[1] / 'launch' / 'navigation_launch.py'
     source = bringup_path.read_text(encoding='utf-8')
 
-    assert "package='nav2_velocity_smoother'" in source
-    assert "name='velocity_smoother'" in source
+    assert "executable='cmd_vel_boost_source_node'" in source
+    assert "name='cmd_vel_boost_source'" in source
+    assert "executable='cmd_vel_mux_stamped_node'" in source
+    assert "name='cmd_vel_mux_stamped'" in source
+    assert "plugin='hanmole_navigation::CmdVelBoostSourceNode'" in source
+    assert "plugin='hanmole_navigation::CmdVelMuxStampedNode'" in source
+    assert 'cmd_vel_nav_accelerator_mux' not in source
     assert "package='nav2_collision_monitor'" in source
     assert "name='collision_monitor'" in source
+    assert "use_cmd_vel_boost_chain = robot_version == 'v0_1'" in source
+
+
+def test_v0_1_navigation_launch_keeps_velocity_smoother_in_boost_chain():
+    module = _load_launch_module(
+        'launch/navigation_launch.py',
+        'hanmole_navigation_navigation_launch_velocity_smoother',
+    )
+
+    lifecycle_nodes = module._navigation_lifecycle_nodes(True)
+    assert lifecycle_nodes == [
+        'controller_server',
+        'smoother_server',
+        'planner_server',
+        'behavior_server',
+        'velocity_smoother',
+        'collision_monitor',
+        'bt_navigator',
+        'waypoint_follower',
+    ]
+
+    actions = module._create_velocity_processing_node_actions(
+        configured_params='mock_params',
+        use_respawn=False,
+        log_level='info',
+        remappings=[],
+        use_cmd_vel_boost_chain=True,
+    )
+    executables = [
+        _node_private_value(action, '_Node__node_executable')
+        for action in actions
+        if isinstance(action, Node)
+    ]
+
+    assert executables == [
+        'cmd_vel_boost_source_node',
+        'cmd_vel_mux_stamped_node',
+        'velocity_smoother',
+    ]
+
+
+def test_v0_1_boost_corridor_half_width_is_derived_from_nav2_footprint():
+    module = _load_launch_module(
+        'launch/navigation_launch.py',
+        'hanmole_navigation_navigation_launch_boost_width',
+    )
+    config_path = (
+        Path(__file__).resolve().parents[1]
+        / 'config'
+        / 'v0_1'
+        / 'nav2_params.yaml'
+    )
+
+    assert abs(module._corridor_half_width_from_nav2_params(str(config_path)) - 0.30) < 1e-9
 
 
 def test_public_bringup_no_longer_declares_cmd_vel_adapter_toggle():

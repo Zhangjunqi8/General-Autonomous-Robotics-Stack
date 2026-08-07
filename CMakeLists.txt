@@ -18,6 +18,7 @@ find_package(nav_msgs REQUIRED)
 find_package(pluginlib REQUIRED)
 find_package(rclcpp REQUIRED)
 find_package(rclcpp_action REQUIRED)
+find_package(rclcpp_components REQUIRED)
 find_package(rclcpp_lifecycle REQUIRED)
 find_package(sensor_msgs REQUIRED)
 find_package(std_msgs REQUIRED)
@@ -56,6 +57,56 @@ target_include_directories(nav2_target_gateway_node PRIVATE include)
 target_link_libraries(nav2_target_gateway_node target_repository)
 ament_target_dependencies(nav2_target_gateway_node ${navigation_node_dependencies})
 
+add_library(accelerate_component SHARED
+  src/accelerate.cpp
+)
+target_include_directories(accelerate_component PUBLIC include)
+target_compile_definitions(
+  accelerate_component
+  PRIVATE HANMOLE_NAVIGATION_ACCELERATE_COMPONENTS
+)
+ament_target_dependencies(
+  accelerate_component
+  geometry_msgs
+  rclcpp
+  rclcpp_components
+  sensor_msgs
+  std_msgs
+)
+rclcpp_components_register_nodes(
+  accelerate_component
+  "hanmole_navigation::CmdVelBoostSourceNode"
+  "hanmole_navigation::CmdVelMuxStampedNode"
+)
+
+add_executable(cmd_vel_boost_source_node src/accelerate.cpp)
+target_include_directories(cmd_vel_boost_source_node PRIVATE include)
+target_compile_definitions(
+  cmd_vel_boost_source_node
+  PRIVATE HANMOLE_NAVIGATION_ACCELERATE_BOOST_MAIN
+)
+ament_target_dependencies(
+  cmd_vel_boost_source_node
+  geometry_msgs
+  rclcpp
+  sensor_msgs
+  std_msgs
+)
+
+add_executable(cmd_vel_mux_stamped_node src/accelerate.cpp)
+target_include_directories(cmd_vel_mux_stamped_node PRIVATE include)
+target_compile_definitions(
+  cmd_vel_mux_stamped_node
+  PRIVATE HANMOLE_NAVIGATION_ACCELERATE_MUX_MAIN
+)
+ament_target_dependencies(
+  cmd_vel_mux_stamped_node
+  geometry_msgs
+  rclcpp
+  sensor_msgs
+  std_msgs
+)
+
 set(navigation_share_dirs
   launch
   config
@@ -86,6 +137,9 @@ install(
 install(
   TARGETS
     target_repository
+    accelerate_component
+    cmd_vel_boost_source_node
+    cmd_vel_mux_stamped_node
     target_catalog_publisher_node
     nav2_target_gateway_node
   ARCHIVE DESTINATION lib
@@ -94,6 +148,7 @@ install(
 )
 
 if(BUILD_TESTING)
+  find_package(ament_cmake_gtest REQUIRED)
   find_package(ament_lint_auto REQUIRED)
   set(ament_cmake_copyright_FOUND TRUE)
   set(ament_cmake_cpplint_FOUND TRUE)
@@ -114,6 +169,24 @@ if(BUILD_TESTING)
     test/test_target_gateway_contract.py
     PYTHON_EXECUTABLE "${Python3_EXECUTABLE}"
   )
+  ament_add_gtest(
+    test_cmd_vel_boost_chain
+    test/test_cmd_vel_boost_chain.cpp
+  )
+  if(TARGET test_cmd_vel_boost_chain)
+    target_include_directories(test_cmd_vel_boost_chain PRIVATE include)
+    target_link_libraries(
+      test_cmd_vel_boost_chain
+      accelerate_component
+    )
+    ament_target_dependencies(
+      test_cmd_vel_boost_chain
+      geometry_msgs
+      rclcpp
+      sensor_msgs
+      std_msgs
+    )
+  endif()
 endif()
 
 ament_package()
