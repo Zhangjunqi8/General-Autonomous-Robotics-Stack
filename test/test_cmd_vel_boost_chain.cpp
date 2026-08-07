@@ -4,8 +4,7 @@
 #include <optional>
 #include <vector>
 
-#include "hanmole_navigation/cmd_vel_boost_source.hpp"
-#include "hanmole_navigation/cmd_vel_mux_stamped.hpp"
+#include "hanmole_navigation/accelerate.hpp"
 
 namespace
 {
