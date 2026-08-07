@@ -67,6 +67,7 @@ ament_target_dependencies(
   rclcpp
   rclcpp_components
   sensor_msgs
+  std_msgs
 )
 rclcpp_components_register_nodes(
   cmd_vel_boost_source_component
@@ -87,6 +88,7 @@ ament_target_dependencies(
   geometry_msgs
   rclcpp
   rclcpp_components
+  sensor_msgs
   std_msgs
 )
 rclcpp_components_register_nodes(
