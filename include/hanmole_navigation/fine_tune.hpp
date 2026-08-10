@@ -1,6 +1,8 @@
 #ifndef HANMOLE_NAVIGATION__FINE_TUNE_HPP_
 #define HANMOLE_NAVIGATION__FINE_TUNE_HPP_
 
+#include <string>
+
 #include "geometry_msgs/msg/pose_stamped.hpp"
 #include "geometry_msgs/msg/twist.hpp"
 
@@ -47,6 +49,12 @@ geometry_msgs::msg::Twist buildOmniCommand(
   double xy_tolerance,
   double yaw_tolerance,
   const ControlLimits & limits = ControlLimits{});
+
+void logPoseError(
+  const PoseError & error,
+  const geometry_msgs::msg::PoseStamped & current,
+  const geometry_msgs::msg::PoseStamped & goal,
+  const std::string & target_name);
 
 }  // namespace hanmole_navigation::fine_tune
 

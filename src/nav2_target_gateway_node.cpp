@@ -868,6 +868,7 @@ private:
       }
 
       const auto error = hanmole_navigation::fine_tune::buildPoseError(*current, goal);
+      hanmole_navigation::fine_tune::logPoseError(error, *current, goal, target_name);
 
       if (error.distance > fine_tune_distance_threshold_) {
         publishZeroFineTuneVelocity();

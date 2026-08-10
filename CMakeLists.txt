@@ -34,7 +34,7 @@ target_link_libraries(target_repository yaml-cpp)
 
 add_library(fine_tune_control src/fine_tune.cpp)
 target_include_directories(fine_tune_control PUBLIC include)
-ament_target_dependencies(fine_tune_control geometry_msgs)
+ament_target_dependencies(fine_tune_control geometry_msgs rclcpp)
 
 set(navigation_node_dependencies
   action_msgs

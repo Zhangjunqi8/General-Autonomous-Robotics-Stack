@@ -2,6 +2,10 @@
 
 #include <algorithm>
 #include <cmath>
+#include <cstdint>
+#include <string>
+
+#include "rclcpp/rclcpp.hpp"
 
 namespace hanmole_navigation::fine_tune
 {
@@ -100,6 +104,65 @@ geometry_msgs::msg::Twist buildOmniCommand(
   }
 
   return cmd;
+}
+
+void logPoseError(
+  const PoseError & error,
+  const geometry_msgs::msg::PoseStamped & current,
+  const geometry_msgs::msg::PoseStamped & goal,
+  const std::string & target_name)
+{
+  static std::string last_target_name;
+  static double last_distance = 0.0;
+  static double last_yaw_error = 0.0;
+  static std::uint64_t sequence = 0;
+
+  if (last_target_name != target_name) {
+    last_target_name = target_name;
+    last_distance = error.distance;
+    last_yaw_error = error.yaw_error;
+    sequence = 1;
+
+    RCLCPP_INFO(
+      rclcpp::get_logger("fine_tune"),
+      "seq=%llu target=%s frame=%s "
+      "cur=(%.6f, %.6f, yaw=%.6f) "
+      "goal=(%.6f, %.6f, yaw=%.6f) "
+      "err: dx=%.6f dy=%.6f dist=%.6fm yaw_err=%.6frad "
+      "body_err: x=%.6f y=%.6f",
+      static_cast<unsigned long long>(sequence),
+      target_name.c_str(),
+      current.header.frame_id.c_str(),
+      current.pose.position.x,
+      current.pose.position.y,
+      error.current_yaw,
+      goal.pose.position.x,
+      goal.pose.position.y,
+      error.goal_yaw,
+      error.dx,
+      error.dy,
+      error.distance,
+      error.yaw_error,
+      error.robot_x,
+      error.robot_y);
+    return;
+  }
+
+  const double distance_delta = error.distance - last_distance;
+  const double yaw_error_delta = error.yaw_error - last_yaw_error;
+  last_distance = error.distance;
+  last_yaw_error = error.yaw_error;
+  ++sequence;
+
+  RCLCPP_INFO(
+    rclcpp::get_logger("fine_tune"),
+    "seq=%llu target=%s dist=%.6fm d_dist=%+.6fm yaw_err=%.6frad d_yaw=%+.6frad",
+    static_cast<unsigned long long>(sequence),
+    target_name.c_str(),
+    error.distance,
+    distance_delta,
+    error.yaw_error,
+    yaw_error_delta);
 }
 
 }  // namespace hanmole_navigation::fine_tune
