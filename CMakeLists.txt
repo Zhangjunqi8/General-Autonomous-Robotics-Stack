@@ -20,6 +20,7 @@ find_package(rclcpp REQUIRED)
 find_package(rclcpp_action REQUIRED)
 find_package(rclcpp_components REQUIRED)
 find_package(rclcpp_lifecycle REQUIRED)
+find_package(robot_localization REQUIRED)
 find_package(sensor_msgs REQUIRED)
 find_package(std_msgs REQUIRED)
 find_package(std_srvs REQUIRED)
@@ -45,6 +46,7 @@ set(navigation_node_dependencies
   nav_msgs
   rclcpp
   rclcpp_action
+  robot_localization
   sensor_msgs
   std_msgs
   std_srvs

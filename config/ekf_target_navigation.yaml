@@ -49,6 +49,8 @@ nav2_target_gateway:
     fine_tune_yaw_goal_tolerance: 0.01
     fine_tune_tolerate_xy_goal_tolerance: 0.01
     fine_tune_tolerate_yaw_goal_tolerance: 0.01
+    post_fine_tune_ekf_reset: true
+    ekf_set_pose_service_name: "/ekf_filter_node/set_pose"
 
 target_catalog_publisher:
   ros__parameters:

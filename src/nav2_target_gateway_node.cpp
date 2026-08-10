@@ -11,6 +11,7 @@
 #include "action_msgs/msg/goal_status.hpp"
 #include "action_msgs/msg/goal_status_array.hpp"
 #include "geometry_msgs/msg/pose_with_covariance_stamped.hpp"
+#include "geometry_msgs/msg/transform_stamped.hpp"
 #include "geometry_msgs/msg/twist_stamped.hpp"
 #include "hanmole_msgs/srv/set_string.hpp"
 #include "hanmole_navigation/fine_tune.hpp"
@@ -25,11 +26,13 @@
 #include "rclcpp/rclcpp.hpp"
 #include "rclcpp_action/rclcpp_action.hpp"
 #include "rclcpp_action/qos.hpp"
+#include "robot_localization/srv/set_pose.hpp"
 #include "sensor_msgs/msg/laser_scan.hpp"
 #include "std_msgs/msg/string.hpp"
 #include "std_srvs/srv/trigger.hpp"
 #include "tf2/exceptions.h"
 #include "tf2_ros/buffer.h"
+#include "tf2_ros/transform_broadcaster.h"
 #include "tf2_ros/transform_listener.h"
 
 namespace
@@ -211,6 +214,10 @@ public:
       "fine_tune_tolerate_xy_goal_tolerance", 0.01);
     fine_tune_tolerate_yaw_goal_tolerance_ = declare_parameter<double>(
       "fine_tune_tolerate_yaw_goal_tolerance", 0.01);
+    post_fine_tune_ekf_reset_ = declare_parameter<bool>(
+      "post_fine_tune_ekf_reset", true);
+    ekf_set_pose_service_name_ = declare_parameter<std::string>(
+      "ekf_set_pose_service_name", "/ekf_filter_node/set_pose");
 
     if (target_file.empty()) {
       throw std::runtime_error("target_file cannot be empty");
@@ -266,6 +273,7 @@ public:
 
     tf_buffer_ = std::make_unique<tf2_ros::Buffer>(get_clock());
     tf_listener_ = std::make_shared<tf2_ros::TransformListener>(*tf_buffer_, this, false);
+    tf_broadcaster_ = std::make_unique<tf2_ros::TransformBroadcaster>(this);
 
     action_client_ = rclcpp_action::create_client<NavigateToPose>(
       this,
@@ -297,6 +305,10 @@ public:
       callback_group_);
     bt_navigator_state_client_ = create_client<GetState>(
       bt_navigator_state_service_,
+      rclcpp::ServicesQoS(),
+      callback_group_);
+    ekf_set_pose_client_ = create_client<robot_localization::srv::SetPose>(
+      ekf_set_pose_service_name_,
       rclcpp::ServicesQoS(),
       callback_group_);
 
@@ -884,6 +896,7 @@ private:
       {
         publishZeroFineTuneVelocity();
         publishFineTuneStatus("ActionStatusFinished");
+        applyPostFineTuneCorrection();
         clearFineTuneState();
         return FineTuneOutcome::Succeeded;
       }
@@ -896,6 +909,7 @@ private:
             fine_tune_yaw_goal_tolerance_ + fine_tune_tolerate_yaw_goal_tolerance_))
         {
           publishFineTuneStatus("ActionStatusFinished");
+          applyPostFineTuneCorrection();
           clearFineTuneState();
           return FineTuneOutcome::Succeeded;
         }
@@ -941,6 +955,77 @@ private:
         exception.what());
       return std::nullopt;
     }
+  }
+
+  bool applyPostFineTuneCorrection()
+  {
+    if (!post_fine_tune_ekf_reset_) {
+      RCLCPP_INFO(
+        get_logger(),
+        "post fine-tune EKF reset disabled by parameter");
+      return true;
+    }
+
+    const auto map_base = lookupRobotPose(map_frame_);
+    if (!map_base.has_value()) {
+      RCLCPP_WARN(
+        get_logger(),
+        "post fine-tune EKF reset skipped: map->base TF unavailable");
+      return false;
+    }
+
+    auto request = std::make_shared<robot_localization::srv::SetPose::Request>();
+    request->pose.header.stamp = now();
+    // Re-anchor odom to the map origin: write the map-frame pose into the
+    // EKF world frame (odom), then reset map->odom to identity below.
+    request->pose.header.frame_id = odom_frame_;
+    request->pose.pose.pose.position.x = map_base->pose.position.x;
+    request->pose.pose.pose.position.y = map_base->pose.position.y;
+    request->pose.pose.pose.position.z = 0.0;
+    request->pose.pose.pose.orientation = map_base->pose.orientation;
+    request->pose.pose.covariance[0] = 1e-6;
+    request->pose.pose.covariance[7] = 1e-6;
+    request->pose.pose.covariance[35] = 1e-6;
+
+    const auto map_pose = *map_base;
+    ekf_set_pose_client_->async_send_request(
+      request,
+      [this, map_pose](
+        rclcpp::Client<robot_localization::srv::SetPose>::SharedFuture future)
+      {
+        try {
+          future.get();
+        } catch (const std::exception & exception) {
+          RCLCPP_WARN(
+            get_logger(),
+            "post fine-tune EKF reset service call failed: %s",
+            exception.what());
+          return;
+        }
+
+        const double map_yaw = yaw_from_quaternion(map_pose.pose.orientation);
+        RCLCPP_INFO(
+          get_logger(),
+          "/odometry/filtered updated after fine tune: pose=(%.6f, %.6f, yaw=%.6f)",
+          map_pose.pose.position.x,
+          map_pose.pose.position.y,
+          map_yaw);
+
+        geometry_msgs::msg::TransformStamped identity;
+        identity.header.stamp = now();
+        identity.header.frame_id = map_frame_;
+        identity.child_frame_id = odom_frame_;
+        identity.transform.rotation.w = 1.0;
+        tf_broadcaster_->sendTransform(identity);
+
+        RCLCPP_INFO(
+          get_logger(),
+          "post fine-tune EKF reset: pose=(%.6f, %.6f, yaw=%.6f), map->odom reset to identity",
+          map_pose.pose.position.x,
+          map_pose.pose.position.y,
+          map_yaw);
+      });
+    return true;
   }
 
   bool fineTuneCancelRequested() const
@@ -1394,6 +1479,8 @@ private:
   double fine_tune_yaw_goal_tolerance_{0.01};
   double fine_tune_tolerate_xy_goal_tolerance_{0.01};
   double fine_tune_tolerate_yaw_goal_tolerance_{0.01};
+  bool post_fine_tune_ekf_reset_{true};
+  std::string ekf_set_pose_service_name_{"/ekf_filter_node/set_pose"};
   std::optional<geometry_msgs::msg::PoseStamped> active_goal_pose_;
   bool fine_tune_running_{false};
   bool fine_tune_cancel_requested_{false};
@@ -1401,6 +1488,7 @@ private:
 
   std::unique_ptr<tf2_ros::Buffer> tf_buffer_;
   std::shared_ptr<tf2_ros::TransformListener> tf_listener_;
+  std::unique_ptr<tf2_ros::TransformBroadcaster> tf_broadcaster_;
   rclcpp_action::Client<NavigateToPose>::SharedPtr action_client_;
   rclcpp::Client<ManageLifecycleNodes>::SharedPtr localization_manager_client_;
   rclcpp::Client<ManageLifecycleNodes>::SharedPtr navigation_manager_client_;
@@ -1409,6 +1497,7 @@ private:
   rclcpp::Client<GetState>::SharedPtr planner_server_state_client_;
   rclcpp::Client<GetState>::SharedPtr controller_server_state_client_;
   rclcpp::Client<GetState>::SharedPtr bt_navigator_state_client_;
+  rclcpp::Client<robot_localization::srv::SetPose>::SharedPtr ekf_set_pose_client_;
   rclcpp::Publisher<std_msgs::msg::String>::SharedPtr nav_status_publisher_;
   rclcpp::Publisher<NavigateToPose::Impl::FeedbackMessage>::SharedPtr nav_feedback_publisher_;
   rclcpp::Publisher<std_msgs::msg::String>::SharedPtr target_state_publisher_;
