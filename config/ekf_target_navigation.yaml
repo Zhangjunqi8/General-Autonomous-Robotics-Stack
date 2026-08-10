@@ -2,6 +2,7 @@ nav2_target_gateway:
   ros__parameters:
     target_file: "/tmp/hanmole_navigation/target_map.yaml"
     target_group: "default"
+    robot_version: "v0_2"
     nav_mode: "ekf_odom"
     amcl_pose_topic: "/amcl_pose"
     scan_topic: "/scan"
@@ -35,8 +36,19 @@ nav2_target_gateway:
     target_state_topic: "/hanmole_navigation/target_state"
     initial_pose_topic: "/initialpose"
     action_timeout_ms: 3000
-    goal_xy_tolerance: 0.05
-    goal_yaw_tolerance: 0.03
+    goal_xy_tolerance: 0.01
+    goal_yaw_tolerance: 0.01
+    fine_tune_enabled: true
+    fine_tune_cmd_vel_topic: "/cmd_vel"
+    fine_tune_status_topic: "/hanmole_navigation/fine_tune_status"
+    fine_tune_motion_model: "auto"
+    fine_tune_loop_hz: 10.0
+    fine_tune_timeout_sec: 5.0
+    fine_tune_distance_threshold: 0.30
+    fine_tune_xy_goal_tolerance: 0.01
+    fine_tune_yaw_goal_tolerance: 0.01
+    fine_tune_tolerate_xy_goal_tolerance: 0.01
+    fine_tune_tolerate_yaw_goal_tolerance: 0.01
 
 target_catalog_publisher:
   ros__parameters:

@@ -46,6 +46,31 @@ def test_target_gateway_supports_already_at_target_short_circuit():
     assert 'already at target' in source
 
 
+def test_target_gateway_supports_post_nav_fine_tune_direct_cmd_vel():
+    source = (
+        Path(__file__).resolve().parents[1]
+        / 'src'
+        / 'nav2_target_gateway_node.cpp'
+    ).read_text(encoding='utf-8')
+
+    assert 'fine_tune_enabled' in source
+    assert 'fine_tuning' in source
+    assert 'fine_tune_cmd_vel_topic' in source
+    assert 'ActionStatusRunning_fine_tune' in source
+    assert 'create_publisher<geometry_msgs::msg::TwistStamped>' in source
+
+
+def test_target_gateway_defers_gateway_terminal_status_to_result_callback():
+    source = (
+        Path(__file__).resolve().parents[1]
+        / 'src'
+        / 'nav2_target_gateway_node.cpp'
+    ).read_text(encoding='utf-8')
+
+    assert 'gatewayGoalHandleIsActive' in source
+    assert 'result callback owns gateway terminal state' in source
+
+
 def test_target_gateway_declares_startup_orchestration_parameters():
     source = (
         Path(__file__).resolve().parents[1]

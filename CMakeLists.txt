@@ -32,6 +32,10 @@ add_library(target_repository src/target_repository.cpp)
 target_include_directories(target_repository PUBLIC include)
 target_link_libraries(target_repository yaml-cpp)
 
+add_library(fine_tune_control src/fine_tune.cpp)
+target_include_directories(fine_tune_control PUBLIC include)
+ament_target_dependencies(fine_tune_control geometry_msgs)
+
 set(navigation_node_dependencies
   action_msgs
   geometry_msgs
@@ -54,7 +58,7 @@ ament_target_dependencies(target_catalog_publisher_node rclcpp std_msgs)
 
 add_executable(nav2_target_gateway_node src/nav2_target_gateway_node.cpp)
 target_include_directories(nav2_target_gateway_node PRIVATE include)
-target_link_libraries(nav2_target_gateway_node target_repository)
+target_link_libraries(nav2_target_gateway_node target_repository fine_tune_control)
 ament_target_dependencies(nav2_target_gateway_node ${navigation_node_dependencies})
 
 add_library(accelerate_component SHARED
@@ -137,6 +141,7 @@ install(
 install(
   TARGETS
     target_repository
+    fine_tune_control
     accelerate_component
     cmd_vel_boost_source_node
     cmd_vel_mux_stamped_node
@@ -173,6 +178,10 @@ if(BUILD_TESTING)
     test_cmd_vel_boost_chain
     test/test_cmd_vel_boost_chain.cpp
   )
+  ament_add_gtest(
+    test_fine_tune_control
+    test/test_fine_tune_control.cpp
+  )
   if(TARGET test_cmd_vel_boost_chain)
     target_include_directories(test_cmd_vel_boost_chain PRIVATE include)
     target_link_libraries(
@@ -185,6 +194,17 @@ if(BUILD_TESTING)
       rclcpp
       sensor_msgs
       std_msgs
+    )
+  endif()
+  if(TARGET test_fine_tune_control)
+    target_include_directories(test_fine_tune_control PRIVATE include)
+    target_link_libraries(
+      test_fine_tune_control
+      fine_tune_control
+    )
+    ament_target_dependencies(
+      test_fine_tune_control
+      geometry_msgs
     )
   endif()
 endif()

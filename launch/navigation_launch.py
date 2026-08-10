@@ -545,6 +545,7 @@ def _launch_setup(context, *args, **kwargs):
                         target_gateway_params,
                         {
                             'target_file': target_file,
+                            'robot_version': LaunchConfiguration('robot_version'),
                             'nav_mode': LaunchConfiguration('nav_mode'),
                         },
                     ],

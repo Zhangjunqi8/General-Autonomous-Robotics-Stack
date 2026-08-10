@@ -11,7 +11,9 @@
 #include "action_msgs/msg/goal_status.hpp"
 #include "action_msgs/msg/goal_status_array.hpp"
 #include "geometry_msgs/msg/pose_with_covariance_stamped.hpp"
+#include "geometry_msgs/msg/twist_stamped.hpp"
 #include "hanmole_msgs/srv/set_string.hpp"
+#include "hanmole_navigation/fine_tune.hpp"
 #include "hanmole_navigation/target_repository.hpp"
 #include "lifecycle_msgs/msg/state.hpp"
 #include "lifecycle_msgs/srv/get_state.hpp"
@@ -124,6 +126,13 @@ public:
   using GoalStatus = action_msgs::msg::GoalStatus;
   using GoalStatusArray = action_msgs::msg::GoalStatusArray;
 
+  enum class FineTuneOutcome
+  {
+    Succeeded,
+    Failed,
+    Canceled,
+  };
+
   Nav2TargetGatewayNode()
   : Node("nav2_target_gateway")
   {
@@ -131,6 +140,7 @@ public:
 
     const std::string target_file = declare_parameter<std::string>("target_file", "");
     target_group_ = declare_parameter<std::string>("target_group", "");
+    robot_version_ = declare_parameter<std::string>("robot_version", "");
     nav_mode_ = declare_parameter<std::string>("nav_mode", "ekf_odom");
     amcl_pose_topic_ = declare_parameter<std::string>("amcl_pose_topic", "/amcl_pose");
     scan_topic_ = declare_parameter<std::string>("scan_topic", "/scan");
@@ -183,12 +193,52 @@ public:
     stable_tf_success_count_ = declare_parameter<int>("stable_tf_success_count", 3);
     goal_xy_tolerance_ = declare_parameter<double>("goal_xy_tolerance", 0.10);
     goal_yaw_tolerance_ = declare_parameter<double>("goal_yaw_tolerance", 0.20);
+    fine_tune_enabled_ = declare_parameter<bool>("fine_tune_enabled", false);
+    fine_tune_cmd_vel_topic_ = declare_parameter<std::string>(
+      "fine_tune_cmd_vel_topic", "/cmd_vel");
+    fine_tune_status_topic_ = declare_parameter<std::string>(
+      "fine_tune_status_topic", "/hanmole_navigation/fine_tune_status");
+    fine_tune_motion_model_ = declare_parameter<std::string>("fine_tune_motion_model", "auto");
+    fine_tune_loop_hz_ = declare_parameter<double>("fine_tune_loop_hz", 10.0);
+    fine_tune_timeout_sec_ = declare_parameter<double>("fine_tune_timeout_sec", 5.0);
+    fine_tune_distance_threshold_ = declare_parameter<double>(
+      "fine_tune_distance_threshold", 0.30);
+    fine_tune_xy_goal_tolerance_ = declare_parameter<double>(
+      "fine_tune_xy_goal_tolerance", 0.01);
+    fine_tune_yaw_goal_tolerance_ = declare_parameter<double>(
+      "fine_tune_yaw_goal_tolerance", 0.01);
+    fine_tune_tolerate_xy_goal_tolerance_ = declare_parameter<double>(
+      "fine_tune_tolerate_xy_goal_tolerance", 0.01);
+    fine_tune_tolerate_yaw_goal_tolerance_ = declare_parameter<double>(
+      "fine_tune_tolerate_yaw_goal_tolerance", 0.01);
 
     if (target_file.empty()) {
       throw std::runtime_error("target_file cannot be empty");
     }
     if (nav_mode_ != "ekf_odom" && nav_mode_ != "wheel_odom") {
       throw std::runtime_error("nav_mode must be ekf_odom or wheel_odom");
+    }
+    if (fine_tune_cmd_vel_topic_.empty()) {
+      throw std::runtime_error("fine_tune_cmd_vel_topic cannot be empty");
+    }
+    if (fine_tune_motion_model_ != "auto" &&
+      fine_tune_motion_model_ != "omni")
+    {
+      throw std::runtime_error("fine_tune_motion_model must be auto or omni");
+    }
+    if (fine_tune_loop_hz_ <= 0.0) {
+      throw std::runtime_error("fine_tune_loop_hz must be positive");
+    }
+    if (fine_tune_timeout_sec_ <= 0.0) {
+      throw std::runtime_error("fine_tune_timeout_sec must be positive");
+    }
+    if (fine_tune_distance_threshold_ <= 0.0 ||
+      fine_tune_xy_goal_tolerance_ <= 0.0 ||
+      fine_tune_yaw_goal_tolerance_ <= 0.0 ||
+      fine_tune_tolerate_xy_goal_tolerance_ < 0.0 ||
+      fine_tune_tolerate_yaw_goal_tolerance_ < 0.0)
+    {
+      throw std::runtime_error("fine tune tolerances and distance threshold must be positive");
     }
 
     if (odom_topic_.empty()) {
@@ -255,14 +305,21 @@ public:
     nav_feedback_publisher_ = create_publisher<NavigateToPose::Impl::FeedbackMessage>(
       nav_feedback_topic_,
       rclcpp::QoS(10).reliable());
-    target_state_publisher_ = create_publisher<std_msgs::msg::String>(target_state_topic_, state_qos);
+    target_state_publisher_ = create_publisher<std_msgs::msg::String>(target_state_topic_,
+        state_qos);
+    fine_tune_status_publisher_ = create_publisher<std_msgs::msg::String>(
+      fine_tune_status_topic_,
+      state_qos);
+    fine_tune_cmd_vel_publisher_ = create_publisher<geometry_msgs::msg::TwistStamped>(
+      fine_tune_cmd_vel_topic_,
+      10);
     initial_pose_publisher_ = create_publisher<geometry_msgs::msg::PoseWithCovarianceStamped>(
       initial_pose_topic_,
       rclcpp::QoS(1).transient_local().reliable());
 
     status_publish_timer_ = create_wall_timer(
       std::chrono::seconds(1),
-      [this]() { republish_state(); },
+      [this]() {republish_state();},
       callback_group_);
 
     rclcpp::SubscriptionOptions subscription_options;
@@ -340,7 +397,7 @@ public:
 
     startup_timer_ = create_wall_timer(
       startup_poll_period_,
-      [this]() { tick_startup_state_machine(); },
+      [this]() {tick_startup_state_machine();},
       callback_group_);
 
     publish_state("idle", "idle");
@@ -372,6 +429,18 @@ private:
 
   void handle_action_status(const GoalStatusArray & message)
   {
+    std::string fine_tune_target_name;
+    {
+      std::lock_guard<std::mutex> lock(state_mutex_);
+      if (fine_tune_running_) {
+        fine_tune_target_name = fine_tune_target_name_;
+      }
+    }
+    if (!fine_tune_target_name.empty()) {
+      publish_state("fine_tuning", fine_tune_target_name);
+      return;
+    }
+
     bool has_accepted = false;
     bool has_canceling = false;
     bool has_executing = false;
@@ -444,6 +513,7 @@ private:
     std::shared_ptr<GoalHandleNavigateToPose> active_goal_handle;
     std::string active_target_name;
     bool switch_in_progress = false;
+    bool fine_tune_running = false;
     {
       std::lock_guard<std::mutex> lock(state_mutex_);
       if (!navigation_ready_) {
@@ -454,11 +524,16 @@ private:
       current_pose_xy = current_pose_xy_;
       active_goal_handle = active_goal_handle_;
       active_target_name = active_target_name_;
+      if (active_target_name.empty() && fine_tune_running_) {
+        active_target_name = fine_tune_target_name_;
+      }
       switch_in_progress = switching_to_pending_target_;
+      fine_tune_running = fine_tune_running_;
     }
 
-    if (active_goal_handle) {
-      const auto target_pose = repository_.resolve_target(target_group_, request->data, current_pose_xy);
+    if (active_goal_handle || fine_tune_running) {
+      const auto target_pose = repository_.resolve_target(target_group_, request->data,
+          current_pose_xy);
       if (!target_pose.has_value()) {
         response->success = false;
         response->result = "target not found: " + request->data;
@@ -473,9 +548,12 @@ private:
           switching_to_pending_target_ = true;
           request_cancel = true;
         }
+        if (fine_tune_running_ && !active_goal_handle_) {
+          fine_tune_cancel_requested_ = true;
+        }
       }
 
-      if (request_cancel || !switch_in_progress) {
+      if (active_goal_handle && (request_cancel || !switch_in_progress)) {
         action_client_->async_cancel_goal(active_goal_handle);
       }
       const std::string current_target = active_target_name.empty() ? "idle" : active_target_name;
@@ -502,7 +580,8 @@ private:
       current_pose_yaw = current_pose_yaw_;
     }
 
-    const auto target_pose = repository_.resolve_target(target_group_, target_name, current_pose_xy);
+    const auto target_pose = repository_.resolve_target(target_group_, target_name,
+        current_pose_xy);
     if (!target_pose.has_value()) {
       result_message = "target not found: " + target_name;
       return false;
@@ -538,8 +617,8 @@ private:
     auto options = typename rclcpp_action::Client<NavigateToPose>::SendGoalOptions();
     options.feedback_callback =
       [this](
-        GoalHandleNavigateToPose::SharedPtr goal_handle,
-        const std::shared_ptr<const NavigateToPose::Feedback> feedback)
+      GoalHandleNavigateToPose::SharedPtr goal_handle,
+      const std::shared_ptr<const NavigateToPose::Feedback> feedback)
       {
         NavigateToPose::Impl::FeedbackMessage feedback_message;
         feedback_message.goal_id.uuid = goal_handle->get_goal_id();
@@ -569,6 +648,7 @@ private:
       std::lock_guard<std::mutex> lock(state_mutex_);
       active_goal_handle_ = goal_handle;
       active_target_name_ = target_name;
+      active_goal_pose_ = goal.pose;
     }
     publish_state("navigating", target_name);
 
@@ -580,24 +660,33 @@ private:
   {
     std::shared_ptr<GoalHandleNavigateToPose> goal_handle;
     std::string active_target_name = "idle";
+    bool fine_tune_running = false;
     {
       std::lock_guard<std::mutex> lock(state_mutex_);
       goal_handle = active_goal_handle_;
+      fine_tune_running = fine_tune_running_;
       pending_target_name_.reset();
       switching_to_pending_target_ = false;
       if (!active_target_name_.empty()) {
         active_target_name = active_target_name_;
+      } else if (fine_tune_running_ && !fine_tune_target_name_.empty()) {
+        active_target_name = fine_tune_target_name_;
+      }
+      if (!goal_handle && fine_tune_running_) {
+        fine_tune_cancel_requested_ = true;
       }
     }
 
-    if (!goal_handle) {
+    if (!goal_handle && !fine_tune_running) {
       publish_state("idle", "idle");
       response->success = true;
       response->message = "no active navigation goal";
       return;
     }
 
-    action_client_->async_cancel_goal(goal_handle);
+    if (goal_handle) {
+      action_client_->async_cancel_goal(goal_handle);
+    }
     publish_state("canceling", active_target_name);
     response->success = true;
     response->message = "cancel requested";
@@ -621,6 +710,7 @@ private:
   {
     std::string nav_status = "failed";
     if (result.code == rclcpp_action::ResultCode::SUCCEEDED &&
+      result.result &&
       result.result->error_code == NavigateToPose::Result::NONE)
     {
       nav_status = "succeeded";
@@ -629,9 +719,12 @@ private:
     }
 
     std::optional<std::string> pending_target_name;
+    std::optional<geometry_msgs::msg::PoseStamped> goal_pose;
     {
       std::lock_guard<std::mutex> lock(state_mutex_);
+      goal_pose = active_goal_pose_;
       active_goal_handle_.reset();
+      active_goal_pose_.reset();
       active_target_name_.clear();
       if (switching_to_pending_target_ && pending_target_name_.has_value()) {
         pending_target_name = pending_target_name_;
@@ -658,8 +751,230 @@ private:
       return;
     }
 
+    const bool should_fine_tune =
+      fine_tune_enabled_ &&
+      (nav_status == "succeeded" || result.code == rclcpp_action::ResultCode::ABORTED);
+    if (should_fine_tune) {
+      if (!goal_pose.has_value()) {
+        publishZeroFineTuneVelocity();
+        publishFineTuneStatus("ActionStatusError_missing_goal");
+        publish_terminal_state("failed");
+        return;
+      }
+
+      const auto outcome = fineTuneGoal(
+        target_name,
+        *goal_pose,
+        nav_status == "succeeded" ? "SUCCEEDED" : "ABORTED");
+
+      pending_target_name = takePendingTargetName();
+      if (pending_target_name.has_value()) {
+        std::string result_message;
+        if (!start_navigation_to_target(*pending_target_name, result_message)) {
+          publish_terminal_state("failed");
+          RCLCPP_WARN(
+            get_logger(),
+            "failed to start pending navigation target %s after fine tune: %s",
+            pending_target_name->c_str(),
+            result_message.c_str());
+        }
+        return;
+      }
+
+      if (outcome == FineTuneOutcome::Succeeded) {
+        publish_terminal_state("succeeded");
+      } else if (outcome == FineTuneOutcome::Canceled) {
+        publish_terminal_state("canceled");
+      } else {
+        publish_terminal_state("failed");
+      }
+      RCLCPP_INFO(
+        get_logger(),
+        "fine tune result for %s after %s: %s",
+        target_name.c_str(),
+        nav_status.c_str(),
+        outcome == FineTuneOutcome::Succeeded ? "succeeded" :
+        outcome == FineTuneOutcome::Canceled ? "canceled" : "failed");
+      return;
+    }
+
     publish_terminal_state(nav_status);
-    RCLCPP_INFO(get_logger(), "navigation result for %s: %s", target_name.c_str(), nav_status.c_str());
+    RCLCPP_INFO(get_logger(), "navigation result for %s: %s", target_name.c_str(),
+        nav_status.c_str());
+  }
+
+  std::optional<std::string> takePendingTargetName()
+  {
+    std::lock_guard<std::mutex> lock(state_mutex_);
+    if (!switching_to_pending_target_ || !pending_target_name_.has_value()) {
+      return std::nullopt;
+    }
+    auto pending_target_name = pending_target_name_;
+    pending_target_name_.reset();
+    switching_to_pending_target_ = false;
+    return pending_target_name;
+  }
+
+  FineTuneOutcome fineTuneGoal(
+    const std::string & target_name,
+    const geometry_msgs::msg::PoseStamped & goal,
+    const std::string & nav_result_text)
+  {
+    if (goal.header.frame_id.empty()) {
+      publishZeroFineTuneVelocity();
+      publishFineTuneStatus("ActionStatusError_missing_goal");
+      return FineTuneOutcome::Failed;
+    }
+
+    {
+      std::lock_guard<std::mutex> lock(state_mutex_);
+      fine_tune_running_ = true;
+      fine_tune_cancel_requested_ = false;
+      fine_tune_target_name_ = target_name;
+    }
+
+    RCLCPP_INFO(
+      get_logger(),
+      "start fine tune for %s after %s",
+      target_name.c_str(),
+      nav_result_text.c_str());
+    publish_state("fine_tuning", target_name);
+    publishZeroFineTuneVelocity();
+    publishFineTuneStatus("ActionStatusStarted");
+
+    const auto start_time = std::chrono::steady_clock::now();
+    rclcpp::WallRate rate(fine_tune_loop_hz_);
+
+    while (rclcpp::ok()) {
+      if (fineTuneCancelRequested()) {
+        publishZeroFineTuneVelocity();
+        publishFineTuneStatus("ActionStatusCanceled");
+        clearFineTuneState();
+        return FineTuneOutcome::Canceled;
+      }
+
+      const double elapsed = std::chrono::duration<double>(
+        std::chrono::steady_clock::now() - start_time).count();
+      const auto current = lookupRobotPose(goal.header.frame_id);
+      if (!current.has_value()) {
+        if (elapsed >= fine_tune_timeout_sec_) {
+          publishZeroFineTuneVelocity();
+          publishFineTuneStatus("ActionStatusError_time_out");
+          clearFineTuneState();
+          return FineTuneOutcome::Failed;
+        }
+        rate.sleep();
+        continue;
+      }
+
+      const auto error = hanmole_navigation::fine_tune::buildPoseError(*current, goal);
+
+      if (error.distance > fine_tune_distance_threshold_) {
+        publishZeroFineTuneVelocity();
+        publishFineTuneStatus("ActionStatusError_distance_threshold");
+        clearFineTuneState();
+        return FineTuneOutcome::Failed;
+      }
+
+      if (hanmole_navigation::fine_tune::withinTolerance(
+          error,
+          fine_tune_xy_goal_tolerance_,
+          fine_tune_yaw_goal_tolerance_))
+      {
+        publishZeroFineTuneVelocity();
+        publishFineTuneStatus("ActionStatusFinished");
+        clearFineTuneState();
+        return FineTuneOutcome::Succeeded;
+      }
+
+      if (elapsed >= fine_tune_timeout_sec_) {
+        publishZeroFineTuneVelocity();
+        if (hanmole_navigation::fine_tune::withinTolerance(
+            error,
+            fine_tune_xy_goal_tolerance_ + fine_tune_tolerate_xy_goal_tolerance_,
+            fine_tune_yaw_goal_tolerance_ + fine_tune_tolerate_yaw_goal_tolerance_))
+        {
+          publishFineTuneStatus("ActionStatusFinished");
+          clearFineTuneState();
+          return FineTuneOutcome::Succeeded;
+        }
+        publishFineTuneStatus("ActionStatusError_time_out");
+        clearFineTuneState();
+        return FineTuneOutcome::Failed;
+      }
+
+      publishFineTuneStatus("ActionStatusRunning_fine_tune_omni");
+      publishFineTuneVelocity(hanmole_navigation::fine_tune::buildOmniCommand(
+        error,
+        fine_tune_xy_goal_tolerance_,
+        fine_tune_yaw_goal_tolerance_));
+      rate.sleep();
+    }
+
+    publishZeroFineTuneVelocity();
+    clearFineTuneState();
+    return FineTuneOutcome::Failed;
+  }
+
+  std::optional<geometry_msgs::msg::PoseStamped> lookupRobotPose(
+    const std::string & global_frame) const
+  {
+    try {
+      const auto transform = tf_buffer_->lookupTransform(
+        global_frame,
+        robot_base_frame_,
+        rclcpp::Time(0),
+        rclcpp::Duration::from_nanoseconds(0));
+
+      geometry_msgs::msg::PoseStamped pose;
+      pose.header = transform.header;
+      pose.pose.position.x = transform.transform.translation.x;
+      pose.pose.position.y = transform.transform.translation.y;
+      pose.pose.position.z = transform.transform.translation.z;
+      pose.pose.orientation = transform.transform.rotation;
+      return pose;
+    } catch (const tf2::TransformException & exception) {
+      RCLCPP_DEBUG(
+        get_logger(),
+        "fine tune pose lookup failed: %s",
+        exception.what());
+      return std::nullopt;
+    }
+  }
+
+  bool fineTuneCancelRequested() const
+  {
+    std::lock_guard<std::mutex> lock(state_mutex_);
+    return fine_tune_cancel_requested_;
+  }
+
+  void clearFineTuneState()
+  {
+    std::lock_guard<std::mutex> lock(state_mutex_);
+    fine_tune_running_ = false;
+    fine_tune_cancel_requested_ = false;
+    fine_tune_target_name_.clear();
+  }
+
+  void publishFineTuneVelocity(const geometry_msgs::msg::Twist & twist)
+  {
+    geometry_msgs::msg::TwistStamped message;
+    message.header.stamp = now();
+    message.header.frame_id = robot_base_frame_;
+    message.twist = twist;
+    fine_tune_cmd_vel_publisher_->publish(message);
+  }
+
+  void publishZeroFineTuneVelocity()
+  {
+    publishFineTuneVelocity(geometry_msgs::msg::Twist{});
+  }
+
+  void publishFineTuneStatus(const std::string & status)
+  {
+    std_msgs::msg::String message;
+    message.data = status;
+    fine_tune_status_publisher_->publish(message);
   }
 
   void publish_terminal_state(
@@ -691,11 +1006,22 @@ private:
       action_status_active_goal_ = false;
     }
 
+    // The result callback owns gateway terminal state so it can run fine tune first.
+    if (gatewayGoalHandleIsActive()) {
+      return;
+    }
+
     if (should_publish_terminal) {
       publish_terminal_state(nav_status);
       return;
     }
     publish_action_state("idle");
+  }
+
+  bool gatewayGoalHandleIsActive() const
+  {
+    std::lock_guard<std::mutex> lock(state_mutex_);
+    return active_goal_handle_ != nullptr;
   }
 
   void publish_action_state(const std::string & nav_status)
@@ -880,7 +1206,8 @@ private:
     request->command = ManageLifecycleNodes::Request::STARTUP;
     auto future = client->async_send_request(request);
     if (future.wait_for(lifecycle_request_timeout_) != std::future_status::ready) {
-      RCLCPP_WARN(get_logger(), "timed out waiting for %s lifecycle startup response", name.c_str());
+      RCLCPP_WARN(get_logger(), "timed out waiting for %s lifecycle startup response",
+          name.c_str());
       return false;
     }
 
@@ -998,6 +1325,7 @@ private:
 
   hanmole_navigation::TargetRepository repository_;
   std::string target_group_;
+  std::string robot_version_;
   std::string nav_mode_;
   std::string amcl_pose_topic_;
   std::string scan_topic_;
@@ -1054,6 +1382,21 @@ private:
   rclcpp::CallbackGroup::SharedPtr callback_group_;
   double goal_xy_tolerance_{0.10};
   double goal_yaw_tolerance_{0.20};
+  bool fine_tune_enabled_{false};
+  std::string fine_tune_cmd_vel_topic_{"/cmd_vel"};
+  std::string fine_tune_status_topic_{"/hanmole_navigation/fine_tune_status"};
+  std::string fine_tune_motion_model_{"auto"};
+  double fine_tune_loop_hz_{10.0};
+  double fine_tune_timeout_sec_{5.0};
+  double fine_tune_distance_threshold_{0.30};
+  double fine_tune_xy_goal_tolerance_{0.01};
+  double fine_tune_yaw_goal_tolerance_{0.01};
+  double fine_tune_tolerate_xy_goal_tolerance_{0.01};
+  double fine_tune_tolerate_yaw_goal_tolerance_{0.01};
+  std::optional<geometry_msgs::msg::PoseStamped> active_goal_pose_;
+  bool fine_tune_running_{false};
+  bool fine_tune_cancel_requested_{false};
+  std::string fine_tune_target_name_;
 
   std::unique_ptr<tf2_ros::Buffer> tf_buffer_;
   std::shared_ptr<tf2_ros::TransformListener> tf_listener_;
@@ -1068,7 +1411,10 @@ private:
   rclcpp::Publisher<std_msgs::msg::String>::SharedPtr nav_status_publisher_;
   rclcpp::Publisher<NavigateToPose::Impl::FeedbackMessage>::SharedPtr nav_feedback_publisher_;
   rclcpp::Publisher<std_msgs::msg::String>::SharedPtr target_state_publisher_;
-  rclcpp::Publisher<geometry_msgs::msg::PoseWithCovarianceStamped>::SharedPtr initial_pose_publisher_;
+  rclcpp::Publisher<std_msgs::msg::String>::SharedPtr fine_tune_status_publisher_;
+  rclcpp::Publisher<geometry_msgs::msg::TwistStamped>::SharedPtr fine_tune_cmd_vel_publisher_;
+  rclcpp::Publisher<geometry_msgs::msg::PoseWithCovarianceStamped>::SharedPtr
+    initial_pose_publisher_;
   rclcpp::Subscription<GoalStatusArray>::SharedPtr action_status_subscription_;
   rclcpp::Subscription<sensor_msgs::msg::LaserScan>::SharedPtr scan_subscription_;
   rclcpp::Subscription<nav_msgs::msg::Odometry>::SharedPtr odom_subscription_;

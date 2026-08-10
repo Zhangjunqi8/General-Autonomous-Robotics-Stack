@@ -249,8 +249,12 @@ def test_ekf_target_navigation_launch_uses_map_target_config():
     assert catalog['target_file'].endswith('/target_map.yaml')
     assert gateway['nav_status_topic'] == '/nav_status'
     assert gateway['amcl_pose_topic'] == '/amcl_pose'
-    assert gateway['goal_xy_tolerance'] == 0.05
-    assert gateway['goal_yaw_tolerance'] == 0.03
+    assert gateway['goal_xy_tolerance'] == 0.01
+    assert gateway['goal_yaw_tolerance'] == 0.01
+    assert gateway['fine_tune_enabled'] is True
+    assert gateway['fine_tune_cmd_vel_topic'] == '/cmd_vel'
+    assert gateway['fine_tune_xy_goal_tolerance'] == 0.01
+    assert gateway['fine_tune_yaw_goal_tolerance'] == 0.01
 
 
 def test_v0_1_ekf_profile_predicts_filtered_odom_to_current_time():
