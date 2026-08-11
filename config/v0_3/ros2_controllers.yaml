@@ -1,0 +1,39 @@
+controller_manager:
+  ros__parameters:
+    update_rate: 100
+
+    joint_state_broadcaster:
+      type: joint_state_broadcaster/JointStateBroadcaster
+
+    base_controller:
+      type: hanmole_controllers/MecanumDriveController
+
+base_controller:
+  ros__parameters:
+    cmd_vel_topic: /cmd_vel
+    reference_timeout: 0.5
+
+    front_left_wheel_command_joint_name: joint_wheel_front_left
+    front_right_wheel_command_joint_name: joint_wheel_front_right
+    rear_right_wheel_command_joint_name: joint_wheel_rear_right
+    rear_left_wheel_command_joint_name: joint_wheel_rear_left
+
+    front_left_wheel_state_joint_name: joint_wheel_front_left
+    front_right_wheel_state_joint_name: joint_wheel_front_right
+    rear_right_wheel_state_joint_name: joint_wheel_rear_right
+    rear_left_wheel_state_joint_name: joint_wheel_rear_left
+
+    kinematics:
+      wheels_radius: 0.05
+      sum_of_robot_center_projection_on_X_Y_axis: 0.30
+      base_frame_offset:
+        x: 0.0
+        y: 0.0
+        theta: 0.0
+
+    base_frame_id: base_footprint
+    odom_frame_id: odom
+    enable_odom_tf: false
+    tf_frame_prefix_enable: false
+    pose_covariance_diagonal: [0.02, 0.02, 0.0, 0.0, 0.0, 0.05]
+    twist_covariance_diagonal: [0.02, 0.02, 0.0, 0.0, 0.0, 0.05]

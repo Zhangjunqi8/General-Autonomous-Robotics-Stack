@@ -10,8 +10,8 @@ from launch_ros.actions import Node
 
 
 def _default_params_path(robot_version: str) -> Path:
-    if robot_version not in ('v0_1', 'v0_2'):
-        raise RuntimeError(f'robot_version must be v0_1 or v0_2, got {robot_version}')
+    if robot_version not in ('v0_1', 'v0_2', 'v0_3'):
+        raise RuntimeError(f'robot_version must be v0_1, v0_2 or v0_3, got {robot_version}')
     share = Path(get_package_share_directory('hanmole_navigation'))
     path = share / 'config' / robot_version / 'ekf.yaml'
     if not path.exists():

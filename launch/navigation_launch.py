@@ -434,9 +434,9 @@ def _create_navigation_composable_actions(
 def _launch_setup(context, *args, **kwargs):
     del args, kwargs
     robot_version = LaunchConfiguration('robot_version').perform(context)
-    if robot_version not in ('v0_1', 'v0_2'):
-        raise RuntimeError('robot_version must be one of: v0_1, v0_2')
-    use_cmd_vel_boost_chain = robot_version == 'v0_1'
+    if robot_version not in ('v0_1', 'v0_2', 'v0_3'):
+        raise RuntimeError('robot_version must be one of: v0_1, v0_2, v0_3')
+    use_cmd_vel_boost_chain = robot_version in ('v0_1', 'v0_3')
     map_yaml = LaunchConfiguration('map').perform(context)
     if not map_yaml:
         raise RuntimeError('localization requires a non-empty map yaml file')
